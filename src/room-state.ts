@@ -10,6 +10,9 @@ export type Presence = { id: string; selection: string[]; laser: Point | null };
 export type RoomState = {
   id: string; title: string; revision: number; playerEditing: boolean;
   me: Participant; participants: Participant[]; presence: Presence[]; table: SharedTable;
+  versions: import("./room-operations.ts").Versions;
+  history: { undo: boolean; redo: boolean };
+  accepted: { id: string; revision: number }[];
   invite?: string;
 };
 export const emptySharedTable = (): SharedTable => ({
@@ -34,6 +37,7 @@ export function parseSharedTable(value: unknown): SharedTable | null {
     (o.image && !/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(o.image)))) return null;
   const snapshot = parseSnapshot(sharedSnapshot(table));
   if (!snapshot) return null;
+  if (new Set(snapshot.scene.strokes.map(s => s.id)).size !== snapshot.scene.strokes.length) return null;
   return { scene: snapshot.scene, mood: snapshot.mood, grid: snapshot.grid,
     obscure: { ...snapshot.obscure, gm: false, gmOpacity: .28 } };
 }

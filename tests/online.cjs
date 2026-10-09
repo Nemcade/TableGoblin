@@ -25,6 +25,77 @@ async function api(endpoint, cookie, value, extra = {}) {
   const json = await response.json(); return { status: response.status, json, cookie: response.headers.get("set-cookie")?.split(";")[0] };
 }
 const copy = value => structuredClone(value);
+const { tableChanges, expectations } = require("../.server-runtime/room-operations.cjs");
+const operation = (state, table, id = require("node:crypto").randomUUID()) => {
+  const changes = tableChanges(state.table, table);
+  return { id, changes, expected: expectations(state.table, changes, state.versions) };
+};
+async function operationTests() {
+  const gm = await api("/api/rooms", null, { name: "Operations GM", color: "#ff9966" });
+  const root = `/api/rooms/${gm.json.id}`;
+  const player = await api(root + "/join", null, { name: "Editor", color: "#4466ee", invite: gm.json.invite });
+  await api(root + "/permissions", gm.cookie, { playerEditing: true });
+  const table = copy(gm.json.table);
+  table.scene.objects = ["a", "b"].map((id, index) => ({ id, kind: "shape", shape: "circle", name: id, x: index * 200, y: 0, width: 60, height: 60, rotation: 0, parentId: null, color: "#aabbcc", strokes: [] }));
+  const create = operation(gm.json, table);
+  let result = await api(root + "/operations", gm.cookie, create); assert.equal(result.status, 200);
+  const original = result.json, a = copy(original.table), b = copy(original.table);
+  a.scene.objects[0].x = 50; a.scene.objects.push(a.scene.objects.shift());
+  b.scene.objects[1].x = 250;
+  const moveA = operation(original, a), moveB = operation(original, b);
+  const race = await Promise.all([api(root + "/operations", gm.cookie, moveA), api(root + "/operations", player.cookie, moveB)]);
+  assert.deepEqual(race.map(r => r.status), [200, 200], "Independent objects accept edits from the same baseline");
+  let state = (await api(root + "/state", gm.cookie)).json;
+  assert.equal(state.table.scene.objects.find(o => o.id === "a").x, 50);
+  assert.equal(state.table.scene.objects.find(o => o.id === "b").x, 250);
+  const revision = state.revision;
+  assert.equal((await api(root + "/operations", gm.cookie, moveA)).json.revision, revision, "Lost-ack retries do not duplicate an operation");
+  assert.equal((await api(root + "/operations", gm.cookie, { ...moveA, changes: [] })).status, 409, "Reusing an identity with another payload is rejected");
+  result = await api(root + "/undo", gm.cookie, { id: require("node:crypto").randomUUID() });
+  assert.equal(result.status, 200); assert.equal(result.json.table.scene.objects.find(o => o.id === "a").x, 0);
+  assert.equal(result.json.table.scene.objects.find(o => o.id === "b").x, 250, "Undo keeps the other actor's object edit");
+  const redoId = require("node:crypto").randomUUID();
+  result = await api(root + "/redo", gm.cookie, { id: redoId }); assert.equal(result.status, 200);
+  assert.equal(result.json.table.scene.objects.find(o => o.id === "a").x, 50);
+  assert.equal((await api(root + "/redo", gm.cookie, { id: redoId })).json.revision, result.json.revision, "Redo also deduplicates retries");
+  // Multiple edits on the same object can be undone/redone in order, while ABA
+  // changes made by another participant still invalidate an old operation.
+  state = result.json;
+  for (const x of [70, 90]) {
+    const next = copy(state.table); next.scene.objects.find(o => o.id === "a").x = x;
+    result = await api(root + "/operations", gm.cookie, operation(state, next)); assert.equal(result.status, 200); state = result.json;
+  }
+  for (const x of [70, 50]) {
+    result = await api(root + "/undo", gm.cookie, { id: require("node:crypto").randomUUID() }); assert.equal(result.status, 200); assert.equal(result.json.table.scene.objects.find(o => o.id === "a").x, x);
+  }
+  for (const x of [70, 90]) {
+    result = await api(root + "/redo", gm.cookie, { id: require("node:crypto").randomUUID() }); assert.equal(result.status, 200); assert.equal(result.json.table.scene.objects.find(o => o.id === "a").x, x);
+  }
+  state = result.json;
+  const overlap = copy(state.table); overlap.scene.objects.find(o => o.id === "a").x = 120;
+  const stale = operation(state, overlap);
+  for (const x of [110, 90]) {
+    const next = copy(state.table); next.scene.objects.find(o => o.id === "a").x = x;
+    result = await api(root + "/operations", player.cookie, operation(state, next)); assert.equal(result.status, 200); state = result.json;
+  }
+  assert.equal((await api(root + "/operations", gm.cookie, stale)).status, 409, "Per-entity versions detect another actor's ABA edit");
+  assert.equal((await api(root + "/undo", gm.cookie, { id: require("node:crypto").randomUUID() })).status, 409, "Undo does not overwrite another actor's later edit");
+  const locked = copy(state.table); locked.scene.objects.find(o => o.id === "b").locked = true;
+  state = (await api(root + "/operations", gm.cookie, operation(state, locked))).json;
+  const forged = copy(state.table); forged.scene.objects.find(o => o.id === "b").x += 1;
+  assert.equal((await api(root + "/operations", player.cookie, operation(state, forged))).status, 403);
+  const theme = copy(state.table); theme.mood.hue = 250;
+  assert.equal((await api(root + "/operations", player.cookie, operation(state, theme))).status, 403);
+  const invalid = copy(state.table); invalid.scene.objects.find(o => o.id === "a").width = -1;
+  assert.equal((await api(root + "/operations", gm.cookie, operation(state, invalid))).status, 400);
+  const valid = copy(state.table); valid.scene.objects.find(o => o.id === "a").x += 1;
+  const missingReads = operation(state, valid); missingReads.expected = [];
+  assert.equal((await api(root + "/operations", gm.cookie, missingReads)).status, 409, "Dependencies cannot be omitted by a forged client");
+  await api(root + "/permissions", gm.cookie, { playerEditing: false });
+  assert.equal((await api(root + "/operations", player.cookie, operation(state, valid))).status, 403, "Revocation applies to operations already prepared by a player");
+  const latest = (await api(root + "/state", gm.cookie)).json;
+  return { root, cookie: gm.cookie, state: latest, retry: moveA };
+}
 async function protocolTests() {
   const host = await api("/api/rooms", null, { name: "Same name", color: "#ff0066", title: "Protocol test" });
   assert.equal(host.status, 201); assert.ok(host.cookie.includes("tg_"));
@@ -165,11 +236,20 @@ async function browserTests() {
 (async () => {
   base = await start(); const persistence = await protocolTests();
   console.log("PASS: authenticated roles, separate invite credentials, stable identities, server-side editing/lock/settings checks, payload validation, origins and stale-revision conflicts");
-  const port = Number(new URL(base).port); await stop(); base = await start(port);
+  const operations = await operationTests();
+  console.log("PASS: concurrent independent commands, per-entity and ABA conflicts, forged dependencies, permission revocation, actor undo/redo and idempotent retries");
+  const port = Number(new URL(base).port); await stop();
+  const legacyFile = path.join(data, `${persistence.state.id}.json`), legacy = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
+  delete legacy.versions; delete legacy.history; delete legacy.receipts; fs.writeFileSync(legacyFile, JSON.stringify(legacy));
+  base = await start(port);
   const restored = await api(persistence.root + "/state", persistence.playerCookie);
   assert.equal(restored.status, 200); assert.deepEqual(restored.json.table, persistence.state.table); assert.equal(restored.json.me.id, persistence.state.me.id);
+  const retried = await api(operations.root + "/operations", operations.cookie, operations.retry);
+  assert.equal(retried.status, 200); assert.equal(retried.json.revision, operations.state.revision);
+  assert.deepEqual(retried.json.table, operations.state.table); assert.deepEqual(retried.json.history, operations.state.history);
   console.log("PASS: server restart restores room contents, permissions, participant roles and reconnect credentials");
   browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   await browserTests();
   console.log("PASS: two-browser room creation/join, shared transforms/artwork/text, colored presence, editing permissions, refresh identity, network reconnect and untouched local table");
+  await require("./online-sync.cjs")(browser, base);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => { await browser?.close(); await stop(); });

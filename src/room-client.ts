@@ -1,6 +1,7 @@
 import type { TableEngine } from "./engine";
 import { sharedSnapshot, type RoomState, type SharedTable } from "./room-state";
 import { tableFile } from "./table-storage";
+import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation } from "./room-operations";
 export type RoomStatus = "connected" | "saving" | "offline";
 export class RoomClient {
   state: RoomState;
@@ -11,7 +12,8 @@ export class RoomClient {
   private pending = false;
   private connected = false;
   private closed = false;
-  private signature: string;
+  private flight: { operation: RoomOperation; acknowledged: boolean } | null = null;
+  private reversing: { id: string; redo: boolean } | null = null;
   private lastPresence = "";
   private presenceSentAt = 0;
   private presenceInFlight = false;
@@ -19,21 +21,14 @@ export class RoomClient {
   constructor(private engine: TableEngine, state: RoomState,
     private update: (state: RoomState, status: RoomStatus) => void,
     private error: (message: string) => void) {
-    this.state = state; this.signature = JSON.stringify(state.table);
+    this.state = state;
     engine.setRoomPermissions(state.me.role === "gm", state.me.role === "gm" || state.playerEditing, false);
     engine.enterRoom(state.table, () => this.schedule());
     this.source = new EventSource(`/api/rooms/${state.id}/events`);
     this.source.addEventListener("state", e => this.receiveState(JSON.parse((e as MessageEvent).data)));
     this.source.addEventListener("table", e => {
       if (this.closed) return;
-      const { table, revision, actor } = JSON.parse((e as MessageEvent).data);
-      if (revision <= this.state.revision) return;
-      if (actor !== this.state.me.id) {
-        if (this.pending || this.inFlight) this.keepDraft("Another participant changed the table before your edit arrived. Your unsent version can be exported.");
-        engine.applyRoom(table); this.signature = JSON.stringify(table);
-      } else engine.acknowledgeRoom(table);
-      this.state = { ...this.state, table, revision };
-      this.update(this.state, this.pending || this.inFlight ? "saving" : "connected");
+      this.receiveState(JSON.parse((e as MessageEvent).data));
     });
     this.source.addEventListener("presence", e => {
       if (this.closed) return;
@@ -45,6 +40,7 @@ export class RoomClient {
     this.source.onerror = this.offline;
     window.addEventListener("offline", this.offline);
     window.addEventListener("online", this.online);
+    window.addEventListener("beforeunload", this.beforeUnload);
     this.presenceTimer = setInterval(() => void this.sendPresence(), 120);
   }
   private offline = () => {
@@ -56,60 +52,104 @@ export class RoomClient {
   private online = () => {
     void roomRequest(`/api/rooms/${this.state.id}/state`).then(next => this.receiveState(next)).catch(() => this.offline());
   };
+  private beforeUnload = (event: BeforeUnloadEvent) => {
+    if (!this.closed && (this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
+      event.preventDefault(); event.returnValue = "";
+    }
+  };
   private receiveState(next: RoomState) {
-    if (this.closed) return;
-    const current = JSON.stringify(this.engine.getRoomTable()), signature = JSON.stringify(next.table);
-    const hasEdits = this.pending && current !== this.signature;
-    const retry = hasEdits && current !== signature && next.revision === this.state.revision && (next.me.role === "gm" || next.playerEditing);
-    if (hasEdits && current !== signature && !retry) this.keepDraft("The room changed while disconnected. Your unsent version can be exported; the latest room version is now open.");
-    if (current === signature) this.pending = false;
+    if (this.closed || next.revision < this.state.revision) return;
+    if (this.reversing && next.accepted.some(r => r.id === this.reversing!.id)) this.reversing = null;
+    let base = this.state.table, versions = this.state.versions;
+    const receipt = this.flight && next.accepted.find(r => r.id === this.flight!.operation.id);
+    if (receipt && this.flight && !this.flight.acknowledged) {
+      const optimistic = applyChanges(base, this.flight.operation.changes);
+      if (optimistic) { versions = advanceVersions(base, optimistic, this.flight.operation.changes, versions, receipt.revision); base = optimistic; }
+      this.flight.acknowledged = true;
+    }
+    const changes = tableChanges(base, this.engine.getRoomTable());
+    const operation = { id: "local-rebase-only", changes, expected: expectations(base, changes, versions) };
+    const permitted = next.me.role === "gm" || next.playerEditing;
+    const conflict = changes.length > 0 && (!permitted || operationConflict(next.table, operation, next.versions));
+    const merged = conflict ? null : applyChanges(next.table, changes);
+    if (conflict || !merged) {
+      this.keepDraft("An object or its group changed before your edit arrived. Your unsent version can be exported; the latest room version is open.");
+      this.engine.applyRoom(next.table);
+    } else this.engine.mergeRoom(merged);
     this.state = next; this.connected = navigator.onLine;
-    this.engine.setRoomPermissions(next.me.role === "gm", next.me.role === "gm" || next.playerEditing, this.connected);
-    if (!retry) { this.engine.applyRoom(next.table); this.signature = signature; }
+    this.engine.acknowledgeRoom(next.table);
+    this.engine.setRoomPermissions(next.me.role === "gm", permitted, this.connected);
+    this.engine.setRoomHistory(next.history, redo => void this.reverse(redo));
     this.engine.setRoomPresence(next.participants, next.presence, next.me.id);
-    this.update(next, this.connected ? "connected" : "offline");
-    if (retry) this.schedule();
+    this.updateStatus();
+    if (this.pending && this.connected && !this.inFlight) this.schedule();
   }
   private keepDraft(message: string) {
-    this.rejectedDraft = this.engine.getRoomTable();
+    const draft = this.engine.getRoomTable();
+    if (!this.rejectedDraft || tableChanges(this.state.table, draft).length) this.rejectedDraft = draft;
     this.pending = false;
     this.error(message);
   }
   private schedule() {
     if (this.closed) return;
     this.pending = true;
+    if (this.engine.editingId) this.updateStatus();
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, 180);
   }
   private async flush() {
     if (this.closed || !this.connected || this.inFlight || !this.pending) return;
-    const table = this.engine.getRoomTable(), signature = JSON.stringify(table);
+    // Pointer gestures and inline text sessions commit when finished. A remote
+    // event must not turn their intermediate state into a durable operation.
+    if (this.engine.gesture || this.engine.editingId) { this.schedule(); return; }
+    const changes = tableChanges(this.state.table, this.engine.getRoomTable());
     this.pending = false;
-    if (signature === this.signature) return;
+    if (!this.flight && !changes.length) { this.updateStatus(); return; }
+    if (!this.flight) this.flight = { operation: { id: crypto.randomUUID(), changes, expected: expectations(this.state.table, changes, this.state.versions) }, acknowledged: false };
+    if (this.flight.acknowledged) { this.flight = null; if (changes.length) this.schedule(); else this.updateStatus(); return; }
     this.inFlight = true; this.update(this.state, "saving");
     try {
-      const response = await fetch(`/api/rooms/${this.state.id}/table`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: this.state.revision, table }), signal: AbortSignal.timeout(15000) });
+      const response = await fetch(`/api/rooms/${this.state.id}/operations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.flight.operation), signal: AbortSignal.timeout(15000) });
       const result = await response.json();
       if (this.closed) return;
       if (!response.ok) {
         this.keepDraft(result.error || "Your edit was rejected by the room server.");
-        const latest = result.state ?? await roomRequest(`/api/rooms/${this.state.id}/state`);
-        this.state = latest; this.engine.applyRoom(latest.table); this.signature = JSON.stringify(latest.table);
-      } else {
-        // An update from another participant can arrive before this HTTP ack.
-        // Preserve that newer revision and its matching signature.
-        if (result.revision >= this.state.revision) {
-          this.signature = signature;
-          if (result.revision > this.state.revision) this.state = { ...this.state, table, revision: result.revision };
-          this.engine.acknowledgeRoom(table);
-        }
-      }
+        const received = result.state ?? await roomRequest(`/api/rooms/${this.state.id}/state`);
+        const latest = received.revision < this.state.revision ? this.state : received;
+        this.flight = null; this.engine.applyRoom(latest.table); this.state = latest;
+        this.engine.setRoomHistory(latest.history, redo => void this.reverse(redo));
+      } else this.receiveState(result);
+      this.flight = null;
+      if (tableChanges(this.state.table, this.engine.getRoomTable()).length) this.pending = true;
     } catch {
       if (!this.closed) { this.pending = true; this.connected = false; this.error("The connection was interrupted. Your edit remains in this window. Reconnect or export it before leaving."); }
     } finally {
       this.inFlight = false;
-      if (!this.closed) { this.engine.setRoomPermissions(this.state.me.role === "gm", this.state.me.role === "gm" || this.state.playerEditing, this.connected); this.update(this.state, this.connected ? "connected" : "offline"); if (this.pending && this.connected) this.schedule(); }
+      if (!this.closed) { this.engine.setRoomPermissions(this.state.me.role === "gm", this.state.me.role === "gm" || this.state.playerEditing, this.connected); this.updateStatus(); if (this.pending && this.connected) this.schedule(); }
     }
+  }
+  private updateStatus() {
+    this.update(this.state, !this.connected ? "offline" : this.pending || this.inFlight ? "saving" : "connected");
+  }
+  async reconnect() { this.receiveState(await roomRequest(`/api/rooms/${this.state.id}/state`)); }
+  private async reverse(redo: boolean) {
+    if (!this.connected || this.closed || this.inFlight || this.engine.gesture || this.engine.editingId) { this.error("Finish your current edit before using Undo or Redo."); return; }
+    if (this.pending || tableChanges(this.state.table, this.engine.getRoomTable()).length) {
+      this.pending = true; await this.flush();
+      if (!this.connected || this.pending) return;
+    }
+    this.inFlight = true; this.updateStatus();
+    this.reversing ??= { id: crypto.randomUUID(), redo };
+    try {
+      const request = this.reversing;
+      const response = await fetch(`/api/rooms/${this.state.id}/${request.redo ? "redo" : "undo"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: request.id }), signal: AbortSignal.timeout(15000) });
+      const result = await response.json();
+      if (this.closed) return;
+      if (response.ok) this.receiveState(result);
+      else { this.error(result.error || "This edit could not be reversed."); if (result.state) this.receiveState(result.state); }
+      this.reversing = null;
+    } catch { this.offline(); this.error("The connection was interrupted. Reconnect to check whether Undo or Redo was saved."); }
+    finally { this.inFlight = false; if (!this.closed) this.updateStatus(); }
   }
   private async sendPresence() {
     if (!this.connected || this.closed || this.presenceInFlight) return;
@@ -134,7 +174,7 @@ export class RoomClient {
   }
   async settle() {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    if (!this.inFlight && JSON.stringify(this.engine.getRoomTable()) === this.signature) { this.pending = false; return; }
+    if (!this.inFlight && !this.flight && !tableChanges(this.state.table, this.engine.getRoomTable()).length) { this.pending = false; return; }
     if (this.inFlight) throw new Error("Wait for the current room change to finish saving.");
     await this.flush();
     if (this.pending || !this.connected) throw new Error("The room is offline. Rejoin or export your current table before leaving.");
@@ -142,6 +182,7 @@ export class RoomClient {
   close() {
     this.closed = true; this.source.close(); clearInterval(this.presenceTimer);
     window.removeEventListener("offline", this.offline); window.removeEventListener("online", this.online);
+    window.removeEventListener("beforeunload", this.beforeUnload);
     if (this.timer) clearTimeout(this.timer);
   }
 }

@@ -46,6 +46,7 @@ import { TableAudio } from "./audio";
 import { defaultMood, type Mood } from "./mood";
 import { isHexColor } from "./colors.ts";
 import { parseSharedTable, playerSceneAllowed, type SharedTable, type Participant, type Presence } from "./room-state";
+import { tableChanges, applyChanges } from "./room-operations";
 import { LocalTableStore, tableFile, recoveryFile, readTableFile, type SaveStatus, type StoredTable, type TableSnapshot } from "./table-storage";
 import { parseDiceSetup } from "./presets";
 import { TableDice, type DiceState } from "./dice";
@@ -178,6 +179,8 @@ export class TableEngine {
   private roomBackup: StoredTable | null = null;
   private roomAccepted: SharedTable | null = null;
   private roomChange: (() => void) | null = null;
+  private roomHistory = { undo: false, redo: false };
+  private roomReverse: ((redo: boolean) => void) | null = null;
   private roomPeers: { person: Participant; presence?: Presence }[] = [];
   private urls = new Set<string>();
   private dirty = true;
@@ -357,14 +360,14 @@ export class TableEngine {
       dice: this.dice.state,
       grid: { ...this.grid },
       obscure: { ...this.obscure },
-      obscureUndo: !!this.obscurePast.length,
-      obscureRedo: !!this.obscureFuture.length,
+      obscureUndo: this.roomActive ? this.roomHistory.undo : !!this.obscurePast.length,
+      obscureRedo: this.roomActive ? this.roomHistory.redo : !!this.obscureFuture.length,
       measurement: this.measurement ? structuredClone(this.measurement) : null,
       zoom: this.camera.zoom,
       selection: selected,
       parentName: parent?.name ?? null,
-      canUndo: !!this.undoStack.length,
-      canRedo: !!this.redoStack.length,
+      canUndo: this.roomActive ? this.roomHistory.undo && this.roomConnected && this.roomEditable : !!this.undoStack.length,
+      canRedo: this.roomActive ? this.roomHistory.redo && this.roomConnected && this.roomEditable : !!this.redoStack.length,
       objectCount: this.scene.objects.length,
       candidate: this.candidate,
       dragging: this.gesture?.kind === "move",
@@ -412,9 +415,39 @@ export class TableEngine {
     this.cleanSelection(); this.emit(false);
   }
   acknowledgeRoom(table: SharedTable) { this.roomAccepted = structuredClone(table); }
+  setRoomHistory(history: { undo: boolean; redo: boolean }, reverse: (redo: boolean) => void) {
+    this.roomHistory = history; this.roomReverse = reverse; this.emit(false);
+  }
+  /** The adapter has already rebased pending local edits onto this table. */
+  mergeRoom(table: SharedTable) {
+    const previous = this.scene;
+    // Keep live brush references and the inline editor intact during unrelated
+    // remote edits. Rebase the gesture's rollback scene too, so Escape is safe.
+    const incoming = clone(table.scene);
+    for (let i = 0; i < incoming.objects.length; i++) {
+      const old = previous.objects.find(o => o.id === incoming.objects[i].id);
+      if (old && JSON.stringify(old) === JSON.stringify(incoming.objects[i])) incoming.objects[i] = old;
+    }
+    for (let i = 0; i < incoming.strokes.length; i++) {
+      const old = previous.strokes.find(s => s.id === incoming.strokes[i].id);
+      if (old && JSON.stringify(old) === JSON.stringify(incoming.strokes[i])) incoming.strokes[i] = old;
+    }
+    const rebaseBefore = (before: Scene) => {
+      const changes = tableChanges({ ...table, scene: previous }, { ...table, scene: before });
+      return applyChanges(table, changes)?.scene ?? before;
+    };
+    if (this.gesture && "before" in this.gesture) this.gesture.before = rebaseBefore(this.gesture.before);
+    if (this.textBefore) this.textBefore = rebaseBefore(this.textBefore);
+    this.scene = incoming;
+    for (const obj of this.scene.objects) if (obj.text) this.ensureTextFonts(obj.text);
+    this.mood = { ...table.mood }; this.grid = { ...table.grid };
+    this.obscure = { ...structuredClone(table.obscure), gm: this.roomGM && this.obscure.gm, gmOpacity: this.obscure.gmOpacity ?? .28 };
+    this.cleanSelection(); this.emit(false);
+  }
   leaveRoom() {
     const backup = this.roomBackup;
     this.roomActive = false; this.roomChange = null; this.roomPeers = [];
+    this.roomReverse = null; this.roomHistory = { undo: false, redo: false };
     this.roomEditable = this.roomGM = this.roomConnected = true;
     this.roomBackup = null; this.roomAccepted = null;
     this.editingId = null; this.textBefore = null;
@@ -719,6 +752,7 @@ export class TableEngine {
   }
   undoObscure(redo = false) {
     if (!this.roomManageAllowed()) return;
+    if (this.roomActive) { this.roomReverse?.(redo); return; }
     this.cancel();
     const from = redo ? this.obscureFuture : this.obscurePast,
       to = redo ? this.obscurePast : this.obscureFuture,
@@ -994,6 +1028,7 @@ export class TableEngine {
   }
   undo() {
     if (!this.roomEditAllowed()) return;
+    if (this.roomActive) { this.roomReverse?.(false); return; }
     this.cancel();
     const scene = this.undoStack.pop();
     if (scene) {
@@ -1005,6 +1040,7 @@ export class TableEngine {
   }
   redo() {
     if (!this.roomEditAllowed()) return;
+    if (this.roomActive) { this.roomReverse?.(true); return; }
     this.cancel();
     const scene = this.redoStack.pop();
     if (scene) {

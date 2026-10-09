@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
 const { emptySharedTable, parseSharedTable, playerSceneAllowed } = require("../.server-runtime/room-state.cjs");
+const { tableChanges, validOperation, operationConflict, applyChanges, expectations, inverseChanges, advanceVersions } = require("../.server-runtime/room-operations.cjs");
 const secret = () => randomBytes(32).toString("base64url");
 const hash = value => createHash("sha256").update(value).digest("hex");
 const project = path.resolve(__dirname, ".."), root = path.join(project, "dist");
@@ -46,6 +47,10 @@ function load(id) {
     try {
       const room = JSON.parse(fs.readFileSync(path.join(data, `${id}.json`), "utf8"));
       if (room.id !== id || !parseSharedTable(room.table) || !Array.isArray(room.members) || !Number.isSafeInteger(room.revision)) throw new Error("Invalid room record");
+      // Original prototype rooms have no operation metadata. Preserve their table
+      // and credentials, and begin entity versioning at the saved revision.
+      room.versions ??= Object.fromEntries([...room.table.scene.objects.map(o => `object:${o.id}`), ...room.table.scene.strokes.map(s => `stroke:${s.id}`), "widget:mood", "widget:grid", "widget:obscure"].map(key => [key, room.revision]));
+      room.history ??= []; room.receipts ??= [];
       rooms.set(id, room);
     } catch (e) { fail(e.code === "ENOENT" ? 404 : 503, e.code === "ENOENT" ? "Room not found." : "This room's saved data could not be opened. It has been kept intact."); }
   }
@@ -68,7 +73,28 @@ function people(room) {
 function state(room, me) {
   return { id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
     me: people(room).find(p => p.id === me.id), participants: people(room), presence: [...(presence.get(room.id)?.values() || [])], table: room.table,
+    versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
     ...(me.role === "gm" ? { invite: room.invite } : {}) };
+}
+function historyStatus(room, actor) {
+  return { undo: room.history.some(h => h.actor === actor && !h.undone), redo: room.history.some(h => h.actor === actor && h.undone) };
+}
+function authorizedTable(room, me, table) {
+  if (me.role !== "gm" && !room.playerEditing) fail(403, "The GM has not enabled player editing.");
+  if (me.role !== "gm") {
+    if (!playerSceneAllowed(room.table.scene, table.scene)) fail(403, "Players cannot edit locked objects or move their parent groups.");
+    if (["mood", "grid", "obscure"].some(key => JSON.stringify(table[key]) !== JSON.stringify(room.table[key]))) fail(403, "Only the GM can change the room's mood, grid and cover.");
+  }
+}
+function publishTable(room, actor, operationId) {
+  for (const c of clients.get(room.id) || []) send(c, "table", { ...state(room, room.members.find(m => m.id === c.id)), actor, operationId });
+}
+function trimHistory(history) {
+  const next = history.slice(-80);
+  // Artwork can be large; retain a bounded undo history instead of growing the
+  // private room file indefinitely. The current table is never trimmed.
+  while (next.length && Buffer.byteLength(JSON.stringify(next)) > 8 * 1024 * 1024) next.shift();
+  return next;
 }
 function send(client, type, value) {
   if (client.res.writableLength > maxBody) { client.res.destroy(); return; }
@@ -97,12 +123,12 @@ const server = http.createServer(async (req, res) => {
         if (fs.readdirSync(data).filter(f => f.endsWith(".json")).length >= 200) fail(503, "This playtest server has reached its room limit.");
         const v = await body(req), profile = identity(v), token = secret();
         const room = { id: randomBytes(8).toString("hex"), title: typeof v.title === "string" ? v.title.trim().slice(0, 60) || "Shared table" : "Shared table",
-          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(),
+          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), versions: {}, history: [], receipts: [],
           members: [{ id: randomUUID(), ...profile, role: "gm", tokenHash: hash(token) }] };
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|presence|permissions)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -155,18 +181,58 @@ const server = http.createServer(async (req, res) => {
         for (const c of clients.get(room.id) || []) send(c, "state", state(room, room.members.find(m => m.id === c.id)));
         return json(res, 200, state(room, me));
       }
+      if (["operations", "undo", "redo"].includes(action)) {
+        if (typeof v.id !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.id)) fail(400, "Invalid operation identity.");
+        const digest = hash(JSON.stringify({ action, value: v })), receipt = room.receipts.find(r => r.id === v.id && r.actor === me.id);
+        if (receipt) {
+          if (receipt.digest !== digest) fail(409, "This operation identity has already been used for a different request.");
+          return json(res, 200, state(room, me));
+        }
+        if (me.role !== "gm" && !room.playerEditing) fail(403, "The GM has not enabled player editing.");
+        let operation, entry;
+        if (action === "operations") {
+          if (!validOperation(v)) fail(400, "Invalid table operation.");
+          operation = v;
+        } else {
+          const own = room.history.filter(h => h.actor === me.id);
+          entry = action === "undo" ? own.findLast(h => !h.undone) : own.find(h => h.undone);
+          if (!entry) fail(409, action === "undo" ? "There is no saved edit to undo." : "There is no saved edit to redo.");
+          operation = { id: v.id, changes: action === "undo" ? entry.inverse : entry.forward, expected: entry.expected };
+        }
+        if (operationConflict(room.table, operation, room.versions)) return json(res, 409, {
+          error: action === "operations" ? "This object or its group changed before your edit arrived. Your unsent version can be exported." : "That edit cannot be reversed because its objects or settings changed afterward. Other participants' work has been preserved.", state: state(room, me),
+        });
+        const table = applyChanges(room.table, operation.changes);
+        if (!table || Buffer.byteLength(JSON.stringify(table)) > maxBody) fail(400, "Invalid or oversized table operation. The existing room has been kept intact.");
+        authorizedTable(room, me, table);
+        const revision = room.revision + 1, versions = advanceVersions(room.table, table, operation.changes, room.versions, revision);
+        let history;
+        if (entry) {
+          const undone = action === "undo", reverse = undone ? entry.forward : entry.inverse;
+          history = room.history.map(h => h.id === entry.id && h.actor === me.id ? { ...h, undone, expected: expectations(table, reverse, versions) } : h);
+          // Reversing our operation restores an earlier causal version. Advance
+          // only our own history references to that exact restored version.
+          const restored = new Map((undone ? entry.beforeExpected : entry.afterExpected).map(e => [e.key, e.version]));
+          const advance = list => list.map(e => ({ ...e, version: versions[e.key] !== room.versions[e.key] && restored.get(e.key) === e.version ? versions[e.key] ?? 0 : e.version }));
+          history = history.map(h => h.actor === me.id ? { ...h, expected: advance(h.expected), beforeExpected: advance(h.beforeExpected), afterExpected: advance(h.afterExpected) } : h);
+        } else {
+          const inverse = inverseChanges(room.table, operation.changes);
+          history = [...room.history.filter(h => h.actor !== me.id || !h.undone), { id: v.id, actor: me.id, forward: operation.changes, inverse, expected: expectations(table, inverse, versions), beforeExpected: operation.expected, afterExpected: expectations(table, inverse, versions), undone: false }];
+        }
+        const next = { ...room, table, revision, versions, history: trimHistory(history), receipts: [...room.receipts, { id: v.id, actor: me.id, revision, digest }].slice(-256) };
+        persist(next); Object.assign(room, next); publishTable(room, me.id, v.id);
+        return json(res, 200, state(room, me));
+      }
       if (action === "table") {
         if (me.role !== "gm" && !room.playerEditing) fail(403, "The GM has not enabled player editing.");
         if (v.revision !== room.revision) return json(res, 409, { error: "The table changed in another window. The latest room version has been loaded; try your edit again.", state: state(room, me) });
         const table = parseSharedTable(v.table);
         if (!table) fail(400, "Invalid table. Rooms currently support shapes, text, drawings and PNG/JPG/WebP/GIF images (8 MB total). Media streams and files stay local.");
-        if (me.role !== "gm") {
-          if (!playerSceneAllowed(room.table.scene, table.scene)) fail(403, "Players cannot edit locked objects or move their parent groups.");
-          if (["mood", "grid", "obscure"].some(key => JSON.stringify(table[key]) !== JSON.stringify(room.table[key]))) fail(403, "Only the GM can change the room's mood, grid and cover.");
-        }
-        const next = { ...room, table, revision: room.revision + 1 };
+        authorizedTable(room, me, table);
+        const changes = tableChanges(room.table, table), revision = room.revision + 1;
+        const next = { ...room, table, revision, versions: advanceVersions(room.table, table, changes, room.versions, revision) };
         persist(next); Object.assign(room, next);
-        broadcast(room, "table", { revision: room.revision, table, actor: me.id });
+        publishTable(room, me.id);
         return json(res, 200, { revision: room.revision });
       }
       fail(405, "Method not allowed.");

@@ -14,7 +14,7 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
   const anchor = useRef<HTMLDivElement>(null), client = useRef<RoomClient | null>(null), restored = useRef("");
   const connect = (state: RoomState) => {
     client.current?.close();
-    client.current = new RoomClient(engine!, state, (next, status) => { setRoom(next); setStatus(status); onStatus(status); }, setError);
+    client.current = new RoomClient(engine!, state, (next, status) => { setRoom(next); setStatus(status); onStatus(status); }, message => { setError(message); setOpen(true); });
     setRoom(state); setStatus("offline"); onStatus("offline");
     try { localStorage.setItem("table-goblin-identity", JSON.stringify({ name: state.me.name, color: state.me.color })); } catch {}
     history.replaceState(null, "", `${location.pathname}${location.search}#room=${state.id}`);
@@ -78,13 +78,9 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
           <label>Player invitation<input aria-label="Player invitation" readOnly value={inviteLink} onFocus={e => e.target.select()} /></label>
           <button className="widget-primary" onClick={() => void act(async () => { await navigator.clipboard.writeText(inviteLink); })}>Copy invitation</button>
         </> : <p className="widget-note">{room.playerEditing ? "You can edit unlocked objects." : "Select and point freely. The GM controls table editing."}</p>}
-        <p className="widget-note">Shapes, text, images and drawings are shared. Pan, zoom, rulers and dice are personal. The GM controls mood, grid and cover. Live media sharing comes next.</p>
+        <p className="widget-note">Shapes, text, images and drawings are shared. Undo reverses your own edits. Pan, zoom, rulers and dice are personal. The GM controls mood, grid and cover.</p>
         {status === "offline" && <button className="widget-primary" disabled={busy} onClick={() => void act(async () => {
-          const draft = engine!.getRoomTable(), next = await roomRequest(`/api/rooms/${room.id}/state`);
-          const changed = JSON.stringify(draft) !== JSON.stringify(room.table);
-          connect(next);
-          if (changed && next.revision === room.revision) { engine!.applyRoom(draft); client.current!.requestSave(); }
-          else if (changed) { client.current!.rejectedDraft = draft; setError("The room changed while disconnected. Export unsent edit keeps your previous version."); }
+          await client.current!.reconnect();
         })}>Rejoin room</button>}
         <button className="widget-primary" onClick={() => void engine?.exportTable()}>Export room table</button>
         <button disabled={busy} onClick={() => void act(async () => {

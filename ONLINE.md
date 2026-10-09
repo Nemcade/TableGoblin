@@ -31,9 +31,13 @@ Pan/zoom, current selection, pen preferences, rulers, preset libraries, and dice
 
 Players initially view, select, pan, measure and point. The GM can enable **Allow players to edit unlocked objects**. That grants collaborative table editing, while the GM retains atmosphere/grid/cover and lock controls. Locked objects and ancestors of locked descendants are protected from player edits. Server checks apply even to forged requests; display names and client-supplied roles cannot grant authority.
 
-This initial server accepts validated whole-table changes against a room revision. Two simultaneous edits based on the same revision cannot silently overwrite each other. One is accepted; the stale one reloads the latest room version and offers **Export unsent edit** to preserve its rejected version. Reconnects reload authoritative state. If a disconnected window has edits and the room revision has not changed, Rejoin retries them; otherwise it retains an exportable draft.
+The browser submits operations with a unique request identity and versions for the affected objects, drawings or widgets. Two people can edit separate objects at once; unrelated incoming updates preserve an active drag, brush stroke or inline text session. Parent/child dependencies are checked together. Changes to the same object or affected hierarchy conflict rather than overwriting someone else's work. The latest room version opens, with **Export unsent edit** available to preserve the rejected version. Each object is one conflict unit, including text, image framing and drawings inside it; this does not merge simultaneous typing within one note.
 
-Undo remains available for edits since the last update from another participant. Receiving another participant's table update clears local undo to avoid rolling their work back. Per-operation undo and per-object conflict resolution are the next synchronization stage. There are no object ownership assignments, observer roles, invite revocation, or drag leases yet.
+Online pointer gestures commit on release, and text sessions commit when finished by clicking away, Escape or the checkmark. Finish typing and wait for **Room connected** before refreshing. The browser asks before leaving with unsaved room edits; local tables retain their existing save-as-you-type behavior.
+
+Undo and Redo reverse only your own accepted operations. An unrelated edit by another participant remains intact. If the affected object or its hierarchy has changed afterward, reversal is refused with a clear explanation. Undo history and request receipts persist with the room, including through refresh and server restart. History retains at most 80 operations across the room, capped at 8 MB; the current table is always retained. A new edit clears only that participant's redo history.
+
+Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their version metadata without changing contents or credentials. Updates still broadcast full authoritative snapshots; separate asset storage and compact update broadcasts are future improvements. There are no object ownership assignments, observer roles, invite revocation, or drag leases yet.
 
 ## Host on the internet
 
@@ -58,4 +62,4 @@ npm run test:online
 npm run test:browser
 ```
 
-Online tests use separate browser contexts and an isolated temporary room directory. They check permissions, malformed/forged requests, stale revisions, restart persistence, room joining, identity refresh, shared edits/presence, and preservation of the local table.
+Online tests use separate browser contexts and an isolated temporary room directory. They check permissions, malformed/forged requests, overlapping and simultaneous independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table.
