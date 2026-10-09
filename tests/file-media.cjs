@@ -1,0 +1,130 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+exports.testUI = async (existing) => {
+  const context = await existing.context().browser().newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
+  await context.addInitScript(() => {
+    window.fileAudios = []; window.mediaTexts = [];
+    const originalAudio = window.Audio;
+    window.Audio = function(src) { const audio = new originalAudio(src); window.fileAudios.push(audio); return audio; };
+    window.Audio.prototype = originalAudio.prototype;
+    const fill = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function(text, ...args) { window.mediaTexts.push(String(text)); window.mediaTexts = window.mediaTexts.slice(-250); return fill.call(this, text, ...args); };
+  });
+  const page = await context.newPage(), errors = [];
+  page.on("pageerror", e => errors.push(e.message));
+  const saved = () => page.waitForFunction(() => document.querySelector(".local-status")?.textContent.includes("SAVED LOCALLY"));
+  const state = () => page.evaluate(async () => {
+    const db = await new Promise(resolve => { const r = indexedDB.open("table-goblin", 1); r.onsuccess = () => resolve(r.result); });
+    const value = await new Promise(resolve => { const r = db.transaction("tables").objectStore("tables").get("current"); r.onsuccess = () => resolve(r.result); }); db.close();
+    return { snapshot: value.snapshot, assets: value.assets.map(a => ({ key: a.key, size: a.blob.size, type: a.blob.type })) };
+  });
+  const input = () => page.locator('input[type="file"][accept^="image/"]');
+  const actions = () => page.getByRole("dialog", { name: "Object actions" });
+  const rightClick = () => page.mouse.click(720, 450, { button: "right" });
+  const wav = Buffer.alloc(32044);
+  wav.write("RIFF", 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write("data", 36); wav.writeUInt32LE(wav.length - 44, 40);
+  for (let i = 44; i < wav.length; i += 2) wav.writeInt16LE(Math.round(Math.sin((i - 44) / 2 / 8000 * Math.PI * 440) * 1500), i);
+  const mp4 = fs.readFileSync(path.join(__dirname, "fixtures/audio-only.mp4"));
+  try {
+    await page.goto(existing.url()); await saved();
+    await input().setInputFiles({ name: "Campfire.wav", mimeType: "audio/wav", buffer: wav });
+    await page.waitForFunction(() => window.fileAudios.some(a => a.readyState >= 2)); await saved();
+    let stored = await state(); assert.equal(stored.snapshot.scene.objects.length, 1);
+    assert.equal(stored.snapshot.scene.objects[0].kind, "audio"); assert.equal(stored.snapshot.scene.objects[0].paused, true);
+    await page.waitForFunction(() => mediaTexts.includes("Campfire.wav"));
+    await rightClick();
+    await actions().getByRole("slider", { name: "Audio file volume" }).fill("40");
+    await actions().getByRole("button", { name: "Loop audio" }).click();
+    await actions().getByRole("button", { name: "Play audio", exact: true }).click();
+    await page.waitForFunction(() => fileAudios[0].paused === false && fileAudios[0].currentTime > 0);
+    assert.deepEqual(await page.evaluate(() => ({ volume: fileAudios[0].volume, loop: fileAudios[0].loop })), { volume: .4, loop: true });
+    await page.keyboard.press("Escape");
+    await page.mouse.click(610, 450); await page.waitForFunction(() => fileAudios[0].paused);
+    // The filename area remains draggable independently of the play button.
+    await page.mouse.move(760, 435); await page.mouse.down(); await page.mouse.move(500, 315, { steps: 8 }); await page.mouse.up();
+    await page.evaluate(data => {
+      const dt = new DataTransfer(); dt.items.add(new File([Uint8Array.from(atob(data), c => c.charCodeAt(0))], "audio-only.mp4", { type: "video/mp4" }));
+      document.querySelector("canvas").dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt, clientX: 720, clientY: 450 }));
+    }, mp4.toString("base64"));
+    await page.waitForFunction(() => fileAudios.length === 2 && fileAudios[1].readyState >= 2); await saved();
+    stored = await state(); assert.equal(stored.snapshot.scene.objects.length, 2); assert.ok(stored.snapshot.scene.objects.every(o => o.kind === "audio"));
+    await rightClick();
+    assert.equal(await actions().getByRole("button", { name: "Crop", exact: true }).count(), 0);
+    await actions().getByRole("slider", { name: "Audio file volume" }).fill("30");
+    await actions().getByRole("button", { name: "Loop audio" }).click();
+    await actions().getByRole("button", { name: "Play audio", exact: true }).click();
+    await page.waitForFunction(() => fileAudios[1].paused === false);
+    await actions().getByRole("button", { name: "Duplicate selection", exact: true }).click(); await saved();
+    assert.equal((await state()).snapshot.scene.objects.length, 3);
+    assert.equal(await page.evaluate(() => fileAudios[2].paused), true, "Copies start paused");
+    await page.keyboard.press("Delete"); await saved(); assert.equal((await state()).snapshot.scene.objects.length, 2);
+    assert.equal(await page.evaluate(() => fileAudios[2].getAttribute("src")), null, "Removing a tile releases its player");
+    await page.keyboard.press("Control+z"); await saved(); assert.equal((await state()).snapshot.scene.objects.length, 3);
+    await page.keyboard.press("Control+Shift+z"); await saved(); assert.equal((await state()).snapshot.scene.objects.length, 2);
+    await page.reload(); await saved();
+    await page.waitForFunction(() => fileAudios.length === 2 && fileAudios.every(a => a.readyState >= 2));
+    stored = await state(); assert.ok(stored.snapshot.scene.objects.every(o => o.paused));
+    const pocket = stored.snapshot.scene.objects.find(o => o.filename === "audio-only.mp4");
+    assert.equal(pocket.loop, true); assert.equal(pocket.volume, .3);
+    assert.equal(stored.assets.find(a => a.type === "video/mp4").size, mp4.length);
+    await page.getByRole("button", { name: "Audio sources", exact: true }).click();
+    const panel = page.getByRole("dialog", { name: "Audio sources" });
+    await panel.getByRole("button", { name: "Locate audio-only.mp4", exact: true }).click();
+    await page.screenshot({ path: ".test-artifacts/audio-files.png" });
+    await page.getByRole("button", { name: "Audio sources", exact: true }).click();
+    await panel.getByRole("button", { name: "Play audio-only.mp4", exact: true }).click();
+    await page.waitForFunction(() => fileAudios[1].paused === false);
+    await panel.getByRole("button", { name: "Stop all audio", exact: true }).click();
+    await page.waitForFunction(() => fileAudios.every(a => a.paused));
+    await panel.getByRole("button", { name: "Close audio panel", exact: true }).click();
+    const download = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Table options", exact: true }).click(); await page.getByRole("button", { name: "Export table", exact: true }).click();
+    const backup = ".test-artifacts/file-audio.goblin.json"; await (await download).saveAs(backup);
+    const portable = JSON.parse(fs.readFileSync(backup, "utf8"));
+    assert.equal(portable.assets.length, 2); assert.ok(portable.assets.some(a => a.data.startsWith("data:audio/wav;base64,")));
+    await page.getByRole("button", { name: "Table options", exact: true }).click(); await page.getByRole("button", { name: "Clear table", exact: true }).click(); await saved();
+    await page.getByLabel("Import table file", { exact: true }).setInputFiles(path.resolve(backup)); await saved();
+    await page.waitForFunction(() => fileAudios.filter(a => a.getAttribute("src")).length === 2);
+    assert.equal((await state()).snapshot.scene.objects.length, 2);
+    await input().setInputFiles({ name: "Broken.mp4", mimeType: "video/mp4", buffer: Buffer.from("not a media container") });
+    await page.waitForFunction(() => document.querySelector(".toast")?.textContent.includes("Broken.mp4:"));
+    assert.equal((await state()).snapshot.scene.objects.length, 2);
+    // A persisted bad file outside the view must still be detectable and locatable.
+    await page.evaluate(async () => {
+      const db = await new Promise(resolve => { const r = indexedDB.open("table-goblin", 1); r.onsuccess = () => resolve(r.result); });
+      const value = await new Promise(resolve => { const r = db.transaction("tables").objectStore("tables").get("current"); r.onsuccess = () => resolve(r.result); });
+      value.snapshot.scene.objects.push({ id: "bad-file", kind: "video", name: "hmmm", filename: "hmmm.mp4", x: 10000, y: 5000, width: 480, height: 270, rotation: 0, parentId: null, color: "#f1ecdd", video: "asset:bad-file", paused: true, strokes: [] });
+      value.assets.push({ key: "bad-file", blob: new Blob(["broken file"], { type: "video/mp4" }) });
+      await new Promise(resolve => { const tx = db.transaction("tables", "readwrite"); tx.objectStore("tables").put(value, "current"); tx.oncomplete = resolve; }); db.close();
+    });
+    await page.reload(); await saved(); await page.waitForTimeout(100);
+    await page.getByRole("button", { name: "Table options", exact: true }).click();
+    await page.getByRole("button", { name: "Find unavailable media", exact: true }).click();
+    await page.waitForFunction(() => mediaTexts.includes("hmmm.mp4") && mediaTexts.some(t => /format could not be read/.test(t)));
+    await page.screenshot({ path: ".test-artifacts/unavailable-media.png" });
+    await rightClick(); await actions().getByRole("button", { name: "Delete selected object", exact: true }).click(); await saved();
+    assert.equal((await state()).snapshot.scene.objects.length, 2);
+    // Saved audio-only MP4 video objects from older builds become audio tiles too.
+    await page.evaluate(async data => {
+      const db = await new Promise(resolve => { const r = indexedDB.open("table-goblin", 1); r.onsuccess = () => resolve(r.result); });
+      const value = await new Promise(resolve => { const r = db.transaction("tables").objectStore("tables").get("current"); r.onsuccess = () => resolve(r.result); });
+      value.snapshot.scene.objects.push({ id: "old-audio", kind: "video", name: "Old phone sound", x: 10000, y: 5000, width: 480, height: 270, rotation: 0, parentId: null, color: "#f1ecdd", video: "asset:old-audio", paused: false, strokes: [] });
+      value.assets.push({ key: "old-audio", blob: new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], { type: "video/mp4" }) });
+      await new Promise(resolve => { const tx = db.transaction("tables", "readwrite"); tx.objectStore("tables").put(value, "current"); tx.oncomplete = resolve; }); db.close();
+    }, mp4.toString("base64"));
+    await page.reload(); await saved();
+    await page.waitForFunction(async () => {
+      const db = await new Promise(resolve => { const r = indexedDB.open("table-goblin", 1); r.onsuccess = () => resolve(r.result); });
+      const value = await new Promise(resolve => { const r = db.transaction("tables").objectStore("tables").get("current"); r.onsuccess = () => resolve(r.result); }); db.close();
+      return value.snapshot.scene.objects.find(o => o.id === "old-audio")?.kind === "audio";
+    });
+    await page.getByRole("button", { name: "Audio sources", exact: true }).click();
+    await panel.getByRole("button", { name: "Locate Old phone sound", exact: true }).click();
+    await page.waitForFunction(() => mediaTexts.includes("Old phone sound"));
+    assert.deepEqual(errors, []);
+    console.log("PASS: dropped WAV and real audio-only MP4, visible playback tiles, volume/loop, paused copies, player cleanup, reload and portable media, global audio locate/stop, corrupted import rejection, offscreen failed-file discovery/deletion and legacy audio conversion");
+  } finally { await context.close(); }
+};
