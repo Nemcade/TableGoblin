@@ -1,12 +1,12 @@
 # Internet playtest plan
 
-The current app is a local table with automatic browser saving and portable table files. This is the proposed path to an internet playtest; rooms, identities, and network permissions are not implemented yet.
+The `feature/online-rooms` branch includes the first working room prototype. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; per-object ownership, WebRTC, authoritative shared dice, operation-based synchronization, and collaboration-aware undo are still future work.
 
 ## First playable room
 
 A host creates a room and shares a join link. A player enters a display name and chooses a presence color. The room opens the same table for everyone, while each browser keeps its own pan, zoom, selection controls, pen preferences, and preset library. Joining should not overwrite a person's local table: local tables and online room snapshots need separate storage keys and an explicit Import into room action.
 
-Use a small TypeScript Node server with Socket.IO for room events, durable room snapshots, and reconnects. The room server owns shared state and validates commands. Clients render optimistically and reconcile acknowledged revisions. Socket.IO supplies room broadcasting and reconnection facilities, but recovery can fail, so a fresh authoritative snapshot is still required. [Rooms](https://socket.io/docs/v4/rooms/), [connection state recovery](https://socket.io/docs/v4/connection-state-recovery).
+The first prototype uses Node HTTP requests for authenticated mutations and server-sent events for room updates and presence. It requires no extra runtime dependencies. The room server owns shared state, validates snapshots, and rejects stale revisions; reconnects load an authoritative snapshot. This deliberately starts with a single server and coarse room revisions. Replace whole-table updates with per-object commands as concurrent editing grows.
 
 Keep the first playtest to 2–6 participants, static images, shapes, drawing, nesting, grid, rulers, and dice. That is enough to test whether the shared-table interactions feel good before adding live media transport.
 

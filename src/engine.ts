@@ -45,6 +45,7 @@ import { waitForMediaData } from "./video-source";
 import { TableAudio } from "./audio";
 import { defaultMood, type Mood } from "./mood";
 import { isHexColor } from "./colors.ts";
+import { parseSharedTable, playerSceneAllowed, type SharedTable, type Participant, type Presence } from "./room-state";
 import { LocalTableStore, tableFile, recoveryFile, readTableFile, type SaveStatus, type StoredTable, type TableSnapshot } from "./table-storage";
 import { parseDiceSetup } from "./presets";
 import { TableDice, type DiceState } from "./dice";
@@ -170,6 +171,14 @@ export class TableEngine {
   private textBefore: Scene | null = null;
   private surfaceColors = new Map<string, string>();
   private textColors = new Map<string, string | null>();
+  roomActive = false;
+  roomEditable = true;
+  roomGM = true;
+  roomConnected = true;
+  private roomBackup: StoredTable | null = null;
+  private roomAccepted: SharedTable | null = null;
+  private roomChange: (() => void) | null = null;
+  private roomPeers: { person: Participant; presence?: Presence }[] = [];
   private urls = new Set<string>();
   private dirty = true;
   private frame = 0;
@@ -296,6 +305,7 @@ export class TableEngine {
         this.gesture?.kind === "marquee" && this.gesture.moved ? this.gesture : undefined,
         this.textBefore ? this.editingId : null,
       );
+      this.paintRoomPresence();
       this.dirty = false;
     }
     this.frame = requestAnimationFrame(this.tick);
@@ -367,8 +377,95 @@ export class TableEngine {
     });
     this.invalidate();
     if (save && this.savingEnabled) this.saveLocal();
+    if (save && this.roomActive && !this.gesture) this.roomChange?.();
+  }
+  getRoomTable(): SharedTable {
+    return { scene: clone(this.scene), mood: { ...this.mood }, grid: { ...this.grid },
+      obscure: { ...structuredClone(this.obscure), gm: false, gmOpacity: .28 } };
+  }
+  enterRoom(table: SharedTable, change: () => void) {
+    if (!this.roomActive) {
+      this.roomBackup = this.snapshot();
+      this.savingEnabled = false;
+      this.roomActive = true;
+      this.audio.clear();
+      this.media.forEach(media => media.stream.getTracks().forEach(track => track.stop()));
+    }
+    this.roomChange = change;
+    this.applyRoom(table);
+  }
+  setRoomPermissions(gm: boolean, editable: boolean, connected: boolean) {
+    this.roomGM = gm; this.roomEditable = editable; this.roomConnected = connected;
+    if (!editable || !connected) { this.cancel(); if (!["select", "laser", "measure"].includes(this.tool)) this.setTool("select"); }
+    this.emit(false);
+  }
+  applyRoom(table: SharedTable) {
+    this.cancel();
+    this.surfaceColors.clear(); this.textColors.clear();
+    this.editingId = null; this.textBefore = null;
+    this.scene = clone(table.scene);
+    for (const obj of this.scene.objects) if (obj.text) this.ensureTextFonts(obj.text);
+    this.mood = { ...table.mood }; this.grid = { ...table.grid };
+    this.obscure = { ...structuredClone(table.obscure), gm: this.roomGM && this.obscure.gm, gmOpacity: this.obscure.gmOpacity ?? .28 };
+    this.roomAccepted = structuredClone(table);
+    this.undoStack = []; this.redoStack = []; this.obscurePast = []; this.obscureFuture = [];
+    this.cleanSelection(); this.emit(false);
+  }
+  acknowledgeRoom(table: SharedTable) { this.roomAccepted = structuredClone(table); }
+  leaveRoom() {
+    const backup = this.roomBackup;
+    this.roomActive = false; this.roomChange = null; this.roomPeers = [];
+    this.roomEditable = this.roomGM = this.roomConnected = true;
+    this.roomBackup = null; this.roomAccepted = null;
+    this.editingId = null; this.textBefore = null;
+    this.undoStack = []; this.redoStack = [];
+    if (backup) this.restore(backup);
+    this.savingEnabled = !this.loadError;
+    this.emit(false);
+  }
+  setRoomPresence(participants: Participant[], entries: Presence[], me: string) {
+    this.roomPeers = participants.filter(p => p.id !== me && p.online).map(person => ({ person, presence: entries.find(p => p.id === person.id) }));
+    this.invalidate();
+  }
+  getRoomPresence(): Omit<Presence, "id"> {
+    return { selection: [...this.selection].slice(0, 64), laser: this.gesture?.kind === "laser" ? this.hover : null };
+  }
+  private roomEditAllowed() {
+    if (!this.roomActive || this.roomEditable && this.roomConnected) return true;
+    this.notify(this.roomConnected ? "The GM has not enabled player editing." : "Reconnecting to the room. Editing will resume when connected.");
+    return false;
+  }
+  private roomManageAllowed() {
+    if (!this.roomActive || this.roomGM && this.roomConnected) return true;
+    this.notify(this.roomConnected ? "Only the GM can change the room's settings." : "Wait for the room to reconnect.");
+    return false;
+  }
+  private paintRoomPresence() {
+    if (!this.roomActive || !this.roomPeers.length) return;
+    const ctx = this.canvas.getContext("2d")!, dpr = devicePixelRatio || 1;
+    ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = "12px system-ui"; ctx.lineWidth = 2;
+    for (const { person, presence } of this.roomPeers) {
+      ctx.strokeStyle = person.color; ctx.fillStyle = person.color;
+      for (const id of presence?.selection ?? []) {
+        const obj = this.scene.objects.find(o => o.id === id); if (!obj) continue;
+        const t = worldTransform(this.scene, obj), x = t.x * this.camera.zoom + this.camera.x, y = t.y * this.camera.zoom + this.camera.y;
+        ctx.save(); ctx.translate(x, y); ctx.rotate(t.rotation);
+        ctx.setLineDash([5, 4]); ctx.strokeRect(-t.width * this.camera.zoom / 2 - 4, -t.height * this.camera.zoom / 2 - 4, t.width * this.camera.zoom + 8, t.height * this.camera.zoom + 8);
+        ctx.setLineDash([]); ctx.fillText(person.name, -t.width * this.camera.zoom / 2, -t.height * this.camera.zoom / 2 - 10); ctx.restore();
+      }
+      if (presence?.laser) {
+        const x = presence.laser.x * this.camera.zoom + this.camera.x, y = presence.laser.y * this.camera.zoom + this.camera.y;
+        ctx.shadowColor = person.color; ctx.shadowBlur = 12;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0; ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillText(person.name, x + 17, y - 12);
+      }
+    }
+    ctx.restore();
   }
   async restoreLocal() {
+    if (this.roomActive) { this.notify("Leave the room to reopen your local table."); return; }
     if (this.store) await this.store.close();
     this.savingEnabled = false;
     this.loadError = null;
@@ -479,6 +576,13 @@ export class TableEngine {
     try {
       const saved = await readTableFile(file);
       if (this.disposed) return;
+      if (this.roomActive) {
+        if (!this.roomManageAllowed()) return;
+        const table = parseSharedTable(saved.snapshot);
+        if (!table) { this.notify("This room can import shapes, text, drawings and PNG/JPG/WebP/GIF artwork. Remove video and audio sources from the file first."); return; }
+        if ((this.scene.objects.length || this.scene.strokes.length) && !window.confirm("Replace the room table with this file? Everyone in the room will see the imported table.")) return;
+        this.applyRoom(table); this.emit(); this.notify("Table imported into the room. Your local table is unchanged."); return;
+      }
       if ((this.scene.objects.length || this.scene.strokes.length) && !window.confirm("Replace the current table with this file? Export your current table first if you want to keep a separate copy.")) return;
       this.cancel();
       const previous = clone(this.scene), wasEnabled = this.savingEnabled;
@@ -509,6 +613,13 @@ export class TableEngine {
       .find((o) => (includeLocked || !o.locked) && containsSurface(p, o, worldTransform(this.scene, o)));
   }
   private commit(before: Scene) {
+    if (this.roomActive && (!this.roomEditAllowed() || (!this.roomGM && !playerSceneAllowed(before, this.scene)))) {
+      this.scene = before; this.cleanSelection(); this.emit(false); return;
+    }
+    if (this.roomActive && !parseSharedTable(this.getRoomTable())) {
+      this.scene = before; this.cleanSelection(); this.emit(false);
+      this.notify("Rooms currently support shapes, text, drawings and PNG/JPG/WebP/GIF images. Video and audio sharing will follow."); return;
+    }
     if (JSON.stringify(before) !== JSON.stringify(this.scene)) {
       this.undoStack.push(before);
       if (this.undoStack.length > 80) this.undoStack.shift();
@@ -534,6 +645,8 @@ export class TableEngine {
     obj.height = t.height;
   }
   setTool(tool: Tool) {
+    if (!["select", "laser", "measure"].includes(tool) && !this.roomEditAllowed()) return;
+    if (tool === "obscure" && !this.roomManageAllowed()) return;
     this.cancel();
     this.tool = tool;
     this.canvas.style.cursor =
@@ -549,6 +662,7 @@ export class TableEngine {
     this.emit();
   }
   setGrid(patch: Partial<GridSettings>) {
+    if (!this.roomManageAllowed()) return;
     this.cancel();
     this.grid = { ...this.grid, ...patch };
     this.grid.size = Math.max(12, Math.min(240, this.grid.size));
@@ -565,6 +679,7 @@ export class TableEngine {
     this.emit();
   }
   setObscure(patch: Partial<Pick<ObscureSettings, "enabled" | "gm" | "gmOpacity" | "mode">>) {
+    if (!this.roomManageAllowed()) return;
     this.cancel();
     if (patch.gmOpacity !== undefined) {
       patch = { ...patch };
@@ -577,6 +692,7 @@ export class TableEngine {
     this.emit();
   }
   private changeObscure(covered: boolean, regions: Region[]) {
+    if (!this.roomManageAllowed()) return;
     if (
       covered === this.obscure.covered &&
       !regions.length &&
@@ -602,6 +718,7 @@ export class TableEngine {
     this.changeObscure(covered, []);
   }
   undoObscure(redo = false) {
+    if (!this.roomManageAllowed()) return;
     this.cancel();
     const from = redo ? this.obscureFuture : this.obscurePast,
       to = redo ? this.obscurePast : this.obscureFuture,
@@ -627,6 +744,7 @@ export class TableEngine {
     this.emit();
   }
   setMood(patch: Partial<Mood>, preview = false) {
+    if (!this.roomManageAllowed()) return;
     patch = { ...patch };
     if (patch.campfireColor !== undefined && !isHexColor(patch.campfireColor))
       delete patch.campfireColor;
@@ -650,6 +768,7 @@ export class TableEngine {
     this.emit();
   }
   setSurfaceColor(color: string, preview = false) {
+    if (!this.roomEditAllowed()) return;
     if (!isHexColor(color)) return;
     this.cancel();
     const targets = this.scene.objects.filter(o => isShape(o) &&
@@ -666,6 +785,7 @@ export class TableEngine {
     }
   }
   setTextColor(id: string, color: string | null, preview = false) {
+    if (!this.roomEditAllowed()) return;
     if (color !== null && !isHexColor(color)) return;
     const obj = this.scene.objects.find(o => o.id === id && o.kind === "text" && !o.locked);
     if (!obj?.text) { this.textColors.delete(id); return; }
@@ -697,6 +817,7 @@ export class TableEngine {
     return obj;
   }
   edit(id: string) {
+    if (!this.roomEditAllowed()) return;
     if (this.editingId === id) return;
     if (this.editingId) this.closeEditor();
     this.cancel();
@@ -733,6 +854,7 @@ export class TableEngine {
     return obj;
   }
   saveText(id: string, text: TextSettings, width: number, record = true) {
+    if (!this.roomEditAllowed()) return;
     const obj = this.scene.objects.find(o => o.id === id && o.kind === "text" && !o.locked);
     if (!obj || !validText(text) || !Number.isFinite(width)) return;
     const before = clone(this.scene);
@@ -838,6 +960,7 @@ export class TableEngine {
     this.commit(before);
   }
   setLocked(locked: boolean, ids = this.selection) {
+    if (!this.roomManageAllowed()) return;
     this.cancel();
     const objects = this.scene.objects.filter(o => ids.has(o.id));
     if (!objects.some(o => !!o.locked !== locked)) return;
@@ -870,6 +993,7 @@ export class TableEngine {
     this.commit(before);
   }
   undo() {
+    if (!this.roomEditAllowed()) return;
     this.cancel();
     const scene = this.undoStack.pop();
     if (scene) {
@@ -880,6 +1004,7 @@ export class TableEngine {
     }
   }
   redo() {
+    if (!this.roomEditAllowed()) return;
     this.cancel();
     const scene = this.redoStack.pop();
     if (scene) {
@@ -1023,6 +1148,12 @@ export class TableEngine {
       );
   }
   async addFiles(files: File[], p?: Point, maskSelection = false) {
+    if (!this.roomEditAllowed()) return;
+    if (this.roomActive) {
+      if (files.some(f => !/^image\/(png|jpeg|webp|gif)$/.test(f.type))) this.notify("Online rooms currently accept PNG, JPG, WebP and GIF images. Video and audio sharing will follow.");
+      files = files.filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type));
+      if (files.reduce((n, f) => n + f.size, 0) > 5 * 1024 * 1024) { this.notify("Choose images under 5 MB total for this room playtest."); return; }
+    }
     const images = files.filter((f) => f.type.startsWith("image/"));
     if (images.length) await this.addImages(images, p, maskSelection);
     for (const [index, file] of files.filter(
@@ -1078,6 +1209,7 @@ export class TableEngine {
       this.notify("Drop an image, GIF, video or audio file.");
   }
   async addScreen(targetId?: string) {
+    if (this.roomActive) { this.notify("Live capture is currently available on local tables. Room streaming will follow."); return; }
     if (!navigator.mediaDevices?.getDisplayMedia) {
       this.notify(
         "Screen sharing needs a browser with capture support, on localhost. Try Chrome or Edge.",
@@ -1103,6 +1235,7 @@ export class TableEngine {
     }
   }
   async addCamera(stream: MediaStream, name: string, targetId?: string) {
+    if (this.roomActive) { stream.getTracks().forEach(t => t.stop()); this.notify("Camera sharing in rooms will follow."); return; }
     await this.connectLive(stream, "camera", name || stream.getVideoTracks()[0]?.label || "Live camera", targetId);
   }
   private async connectLive(stream: MediaStream, kind: "screen" | "camera", name: string, targetId?: string) {
@@ -1311,6 +1444,18 @@ export class TableEngine {
     if (e.button === 1 || this.space) {
       this.gesture = { kind: "pan", start: s, camera: { ...this.camera } };
       this.canvas.style.cursor = "grabbing";
+      return;
+    }
+    if (this.roomActive && (!this.roomEditable || !this.roomConnected) && this.tool === "select") {
+      const obj = this.hit(p);
+      if (obj) {
+        if (!e.shiftKey) this.selection = new Set([obj.id]);
+        else if (this.selection.has(obj.id)) this.selection.delete(obj.id); else this.selection.add(obj.id);
+        this.emit(false);
+      } else {
+        this.gesture = { kind: "marquee", start: p, end: p, previous: new Set(this.selection), additive: e.shiftKey, moved: false, pointerId: e.pointerId };
+        if (!e.shiftKey) this.selection.clear(); this.emit(false);
+      }
       return;
     }
     if (this.tool === "select" && !e.shiftKey) {

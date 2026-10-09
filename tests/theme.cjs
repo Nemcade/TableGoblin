@@ -146,8 +146,11 @@ exports.testEngine = async (page) => {
     engine.dice.choose(6);
     engine.dice.roll(engine.camera, engine.viewWidth, engine.viewHeight);
     const d = engine.dice;
+    // Keep the normal animation loop at the settled frame too, rather than
+    // stepping into the future once and then rewinding on the next real tick.
+    d.start = performance.now() - ((d.frames.frameCount - 1) / d.frames.fps) * 1000;
     d.step(
-      d.start + ((d.frames.frameCount - 1) / d.frames.fps) * 1000,
+      performance.now(),
       engine.camera,
       engine.viewWidth,
       engine.viewHeight,

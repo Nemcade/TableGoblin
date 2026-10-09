@@ -12,6 +12,12 @@ const lasso = async (page, points) => {
     await page.mouse.move(p.x, p.y, { steps: 5 });
   await page.mouse.up();
 };
+const readMeasure = page => page.locator(".measure-result strong").evaluate(el => {
+  const parts = new Intl.NumberFormat().formatToParts(12345.6);
+  const group = parts.find(p => p.type === "group")?.value ?? "\u0000";
+  const decimal = parts.find(p => p.type === "decimal")?.value ?? ".";
+  return Number(el.textContent.replaceAll(group, "").split(" ")[0].replace(decimal, "."));
+});
 exports.testUI = async (page) => {
   assert.equal(
     await page.locator(".table-caption, .toolbar-note, .brand p").count(),
@@ -102,22 +108,14 @@ exports.testUI = async (page) => {
   assert.ok(
     (await page.locator(".measure-result strong").textContent()).endsWith(" m"),
   );
-  const original = Number(
-    (await page.locator(".measure-result strong").textContent()).split(" ")[0],
-  );
+  const original = await readMeasure(page);
   await page.getByRole("spinbutton", { name: "Units per square" }).fill("3");
   await page.getByRole("textbox", { name: "Scale unit name" }).fill("paces");
-  const scaled = Number(
-    (await page.locator(".measure-result strong").textContent()).split(" ")[0],
-  );
-  assert.ok(Math.abs(scaled - original * 3) < 0.025);
+  const scaled = await readMeasure(page);
+  assert.ok(Math.abs(scaled - original * 3) < 0.025, `Ruler should scale by 3: original=${original}, scaled=${scaled}, label=${JSON.stringify(await page.locator(".measure-result strong").textContent())}`);
   await page.getByRole("slider", { name: "Grid rotation" }).fill("35");
   assert.equal(
-    Number(
-      (await page.locator(".measure-result strong").textContent()).split(
-        " ",
-      )[0],
-    ),
+    await readMeasure(page),
     scaled,
   );
   await page
@@ -186,9 +184,7 @@ exports.testUI = async (page) => {
     ),
   );
   await page.getByRole("slider", { name: "Grid square size" }).fill("160");
-  const resized = Number(
-    (await page.locator(".measure-result strong").textContent()).split(" ")[0],
-  );
+  const resized = await readMeasure(page);
   assert.ok(Math.abs(resized - scaled / 2) < 0.01);
   await toggle("Obscure", true);
   await page.getByRole("button", { name: "Reveal", exact: true }).click();

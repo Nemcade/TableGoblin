@@ -1,12 +1,12 @@
 # Table Goblin
 
-A local tabletop for play: colored shapes, image tokens, drawing, physical nesting, live screens/cameras, audio sources, looping video/GIF surfaces, atmosphere, and optional dice/grid/obscure widgets. No accounts or game rules. Online rooms are the next development stage; see [MULTIPLAYER.md](MULTIPLAYER.md).
+A tabletop for play: colored shapes, image tokens, drawing, physical nesting, live screens/cameras, audio sources, looping video/GIF surfaces, atmosphere, and optional dice/grid/obscure widgets. No accounts or game rules. This branch also includes a first online room playtest; see [ONLINE.md](ONLINE.md).
 
 ## Open the app
 
 **Double-click `Open Table Goblin.bat`.** The launcher starts a server on your computer and opens your default browser. Keep the terminal window open while using the table; close it to stop. Chrome or Edge is recommended for live capture.
 
-The built app is included in `dist/`. The launcher needs Node.js (22.12 or newer recommended), with no install or internet connection required. It can also use the Node runtime bundled with Codex. If Node is missing, install it from https://nodejs.org.
+When cloning from GitHub, first run `npm install` and `npm run build` to generate `dist/` and the bundled room server. Once built, the local launcher needs Node.js 22.12 or newer and works without an internet connection. It can also use the Node runtime bundled with Codex. If Node is missing, install it from https://nodejs.org.
 
 Alternatively, run `node scripts/launch.cjs`. The server uses `127.0.0.1:4173`, reuses a running instance for this folder, and tries another port if occupied.
 
@@ -140,3 +140,6 @@ The browser suite builds the app and runs installed Edge on Windows, starting/st
 React + TypeScript + Vite, with Canvas 2D rendering, cannon-es dice physics, and gifuct-js GIF decoding. `src/model.ts` owns geometry/hierarchy, `src/engine.ts` owns interactions/history and local saving, `src/table-storage.ts` validates and stores table/media snapshots, `src/render.ts` draws surfaces, `src/dice-physics.ts` and its worker simulate dice, `src/dice-controller.ts` replays them, `src/dice-sound.ts` synthesizes contact sounds, and `src/main.tsx` contains floating controls. `src/MediaEditor.tsx` edits media framing; `src/animated-gif.ts` composes GIF frames.
 
 Nested positions are normalized to parent dimensions. Rotations compose through ancestors; child sizes remain table units. Reparenting converts world coordinates to preserve placement. Parenting uses convex footprint clipping; circles use an overlap polygon and ellipse hit test. Parent hierarchies render as contiguous stacks.
+# Online development
+
+The first shared-room prototype is available on `feature/online-rooms`. Use **Open Online Table Goblin.bat** or `npm run start:online` after building. See [ONLINE.md](ONLINE.md) for joining, permissions, current limits, and deployment. The original launcher continues to work for local tables.

@@ -13,6 +13,8 @@ import { defaultGrid, defaultObscure } from "./table-widgets";
 import { WidgetIcon, WidgetMenu, WidgetDock, type WidgetName } from "./Widgets";
 import { NumericValue } from "./NumericValue";
 import { defaultDiceGroup } from "./dice";
+import { RoomControl } from "./RoomControl";
+import type { RoomStatus } from "./room-client";
 import "./style.css";
 type IconName =
   | "select"
@@ -314,10 +316,11 @@ function App() {
     [captureTarget, setCaptureTarget] = useState<string | undefined>(),
     [shapeColor, setShapeColor] = useState("#acbf9b"),
     [toast, setToast] = useState("");
+  const [roomStatus, setRoomStatus] = useState<RoomStatus | null>(null);
   useEffect(() => {
     const instance = new TableEngine(
       canvas.current!,
-      setView,
+      view => { setView(view); if (engine.current?.roomActive && !engine.current.editingId) setEditor(null); },
       (message) => {
         setToast(message);
         if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -394,9 +397,10 @@ function App() {
           </div>
         </div>
         <div className="header-actions">
-          <span className="local-status" aria-label="Local table save status" title="Your table saves in this browser">
+          {roomStatus ? <span className="local-status" aria-label="Room connection status"><i />{roomStatus === "connected" ? "ROOM CONNECTED" : roomStatus === "saving" ? "SAVING ROOM…" : "ROOM OFFLINE"}</span> : <span className="local-status" aria-label="Local table save status" title="Your table saves in this browser">
             <i /> {view.storage === "saved" ? "SAVED LOCALLY" : view.storage === "saving" ? "SAVING…" : view.storage === "error" ? "NOT SAVED" : "YOUR LOCAL TABLE"}
-          </span>
+          </span>}
+          <RoomControl engine={engine.current} ready={view.storage !== "loading" && !!engine.current && !view.loadError} onStatus={setRoomStatus} />
           <div className="menu-anchor live-feeds-anchor">
             <button className={`icon-button live-feeds-button ${menu === "feeds" || view.streams ? "active" : ""}`}
               aria-label="Live feeds" title="Manage screens and cameras" aria-haspopup="dialog" aria-controls="live-feeds-panel" aria-expanded={menu === "feeds"}

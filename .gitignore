@@ -3,3 +3,8 @@ dist/
 .npm-cache/
 *.log
 .test-artifacts/
+.server-runtime/
+room-data/
+.env
+.env.*
+!.env.example

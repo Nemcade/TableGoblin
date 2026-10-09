@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+.server-runtime
+.test-artifacts
+.npm-cache
+room-data
+.env
+.env.*
+*.log
