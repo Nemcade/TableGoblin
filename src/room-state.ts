@@ -5,9 +5,11 @@ import { defaultDiceGroup } from "./dice-types.ts";
 import type { Point, Scene } from "./model.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
+export const ROOM_PROTOCOL = 2;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean };
 export type Presence = { id: string; selection: string[]; laser: Point | null };
 export type RoomState = {
+  protocol: number;
   id: string; title: string; revision: number; playerEditing: boolean;
   me: Participant; participants: Participant[]; presence: Presence[]; table: SharedTable;
   versions: import("./room-operations.ts").Versions;
@@ -15,6 +17,23 @@ export type RoomState = {
   accepted: { id: string; revision: number }[];
   invite?: string;
 };
+/** Decode the API boundary; older servers can still display their saved table. */
+export function readRoomState(value: unknown, previous?: RoomState): RoomState | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  let v = value as Record<string, any>;
+  if (v.id === undefined && previous?.protocol === 0) v = { ...previous, table: v.table, revision: v.revision };
+  const participant = (p: any) => p && typeof p.id === "string" && typeof p.name === "string" && /^#[0-9a-f]{6}$/i.test(p.color) && ["gm", "player"].includes(p.role) && typeof p.online === "boolean";
+  if (!/^[a-z0-9]{16}$/.test(v.id) || typeof v.title !== "string" || !Number.isSafeInteger(v.revision) || v.revision < 0 || typeof v.playerEditing !== "boolean" ||
+    !participant(v.me) || !Array.isArray(v.participants) || !v.participants.every(participant) || !Array.isArray(v.presence)) return null;
+  const table = parseSharedTable(v.table);
+  if (!table) return null;
+  const metadata = v.history && typeof v.history.undo === "boolean" && typeof v.history.redo === "boolean" &&
+    v.versions && typeof v.versions === "object" && !Array.isArray(v.versions) && Object.values(v.versions).every(n => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= v.revision) &&
+    Array.isArray(v.accepted) && v.accepted.every((r: any) => r && typeof r.id === "string" && Number.isSafeInteger(r.revision) && r.revision >= 0 && r.revision <= v.revision);
+  const protocol = v.protocol ?? (metadata ? ROOM_PROTOCOL : 0);
+  if (!Number.isSafeInteger(protocol) || protocol < 0 || protocol === ROOM_PROTOCOL && !metadata) return null;
+  return { ...v, protocol, table, versions: metadata ? v.versions : {}, history: metadata ? v.history : { undo: false, redo: false }, accepted: metadata ? v.accepted : [] } as RoomState;
+}
 export const emptySharedTable = (): SharedTable => ({
   scene: { objects: [], strokes: [] }, mood: { ...defaultMood },
   grid: { ...defaultGrid }, obscure: { ...defaultObscure, regions: [] },

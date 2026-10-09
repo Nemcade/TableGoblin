@@ -416,7 +416,7 @@ export class TableEngine {
   }
   acknowledgeRoom(table: SharedTable) { this.roomAccepted = structuredClone(table); }
   setRoomHistory(history: { undo: boolean; redo: boolean }, reverse: (redo: boolean) => void) {
-    this.roomHistory = history; this.roomReverse = reverse; this.emit(false);
+    this.roomHistory = { undo: history?.undo === true, redo: history?.redo === true }; this.roomReverse = reverse; this.emit(false);
   }
   /** The adapter has already rebased pending local edits onto this table. */
   mergeRoom(table: SharedTable) {

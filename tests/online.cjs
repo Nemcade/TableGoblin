@@ -252,4 +252,5 @@ async function browserTests() {
   await browserTests();
   console.log("PASS: two-browser room creation/join, shared transforms/artwork/text, colored presence, editing permissions, refresh identity, network reconnect and untouched local table");
   await require("./online-sync.cjs")(browser, base);
+  await require("./online-compat.cjs")(browser, base);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => { await browser?.close(); await stop(); });

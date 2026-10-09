@@ -10,7 +10,7 @@
     "start": "node scripts/launch.cjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && node scripts/build-server.cjs",
-    "start:online": "node scripts/room-server.cjs",
+    "start:online": "node scripts/launch-online.cjs",
     "test:online": "npm run build && node tests/online.cjs",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "test:browser": "npm run build && node tests/browser.cjs"

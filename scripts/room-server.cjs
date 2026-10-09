@@ -2,7 +2,8 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
-const { emptySharedTable, parseSharedTable, playerSceneAllowed } = require("../.server-runtime/room-state.cjs");
+const { ROOM_PROTOCOL, emptySharedTable, parseSharedTable, playerSceneAllowed } = require("../.server-runtime/room-state.cjs");
+const runningBuild = require("./online-runtime.cjs").serverBuild();
 const { tableChanges, validOperation, operationConflict, applyChanges, expectations, inverseChanges, advanceVersions } = require("../.server-runtime/room-operations.cjs");
 const secret = () => randomBytes(32).toString("base64url");
 const hash = value => createHash("sha256").update(value).digest("hex");
@@ -71,7 +72,7 @@ function people(room) {
   return room.members.map(({ id, name, color, role }) => ({ id, name, color, role, online: [...(clients.get(room.id) || [])].some(c => c.id === id) }));
 }
 function state(room, me) {
-  return { id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
+  return { protocol: ROOM_PROTOCOL, id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
     me: people(room).find(p => p.id === me.id), participants: people(room), presence: [...(presence.get(room.id)?.values() || [])], table: room.table,
     versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
     ...(me.role === "gm" ? { invite: room.invite } : {}) };
@@ -113,7 +114,7 @@ const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
-    if (url.pathname === "/api/health") return json(res, 200, { app: "table-goblin", online: true });
+    if (url.pathname === "/api/health") return json(res, 200, { app: "table-goblin", online: true, protocol: ROOM_PROTOCOL, build: runningBuild });
     if (url.pathname.startsWith("/api/")) {
       if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) fail(403, "Use this server's own room link.");
       if (req.headers["sec-fetch-site"] === "cross-site") fail(403, "Cross-site room requests are not allowed.");

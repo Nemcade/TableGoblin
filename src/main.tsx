@@ -397,7 +397,7 @@ function App() {
           </div>
         </div>
         <div className="header-actions">
-          {roomStatus ? <span className="local-status" aria-label="Room connection status"><i />{roomStatus === "connected" ? "ROOM CONNECTED" : roomStatus === "saving" ? "SAVING ROOM…" : "ROOM OFFLINE"}</span> : <span className="local-status" aria-label="Local table save status" title="Your table saves in this browser">
+          {roomStatus ? <span className="local-status" aria-label="Room connection status"><i />{roomStatus === "connected" ? "ROOM CONNECTED" : roomStatus === "saving" ? "SAVING ROOM…" : roomStatus === "update-required" ? "RESTART ROOM SERVER" : "ROOM OFFLINE"}</span> : <span className="local-status" aria-label="Local table save status" title="Your table saves in this browser">
             <i /> {view.storage === "saved" ? "SAVED LOCALLY" : view.storage === "saving" ? "SAVING…" : view.storage === "error" ? "NOT SAVED" : "YOUR LOCAL TABLE"}
           </span>}
           <RoomControl engine={engine.current} ready={view.storage !== "loading" && !!engine.current && !view.loadError} onStatus={setRoomStatus} />

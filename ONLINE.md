@@ -14,6 +14,8 @@ npm run start:online
 
 Or double-click **Open Online Table Goblin.bat** after the build. It opens `http://127.0.0.1:4180/`. Keep the server window open. The original launcher still opens the local-only server on port 4173.
 
+After updating the app, close the existing online server window (or press Ctrl+C there), reopen the online launcher, and refresh both the GM and player browsers. Refreshing only the browser can load a new app against an older server process. The launcher checks the running server before opening a browser; an outdated process gets a restart explanation instead of silently being reused. Saved rooms and browser identities survive this restart. With an older server, the new app can still display the table in read-only mode and shows **Restart room server**.
+
 Open **Online**, enter a name and pointer color, and create a room. Copy the player invitation into another browser or an independent browser profile. Names are labels; matching names do not grant another participant's identity. A room starts empty. **Table options → Import table** lets the GM import a saved table containing supported artwork. Leaving the room restores the local table that was open before joining. Room state is never saved over the local IndexedDB record.
 
 Browser identities and GM credentials use persistent, HttpOnly cookies scoped to each room. The GM should keep their browser profile; losing its cookies loses GM access in this prototype. Invitation links grant player access, never GM access. Opening a room URL after refresh restores the same identity. Clearing the address fragment returns to the normal entry page on the next reload; the room remains on the server.

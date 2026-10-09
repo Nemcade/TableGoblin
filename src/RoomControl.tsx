@@ -67,10 +67,10 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
         })}>Join room</button>
         <p className="widget-note">Rooms start empty. Your local table stays saved separately. Start “Open Online Table Goblin” from the project folder to try rooms.</p>
       </> : <>
-        <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : "Reconnecting…"}</small></div>
+        <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : "Reconnecting…"}</small></div>
         <div className="room-people">{room.participants.map(p => <div key={p.id}><i style={{ background: p.color, opacity: p.online ? 1 : .35 }} /><span>{p.name}</span><small>{p.role === "gm" ? "GM · " : ""}{p.online ? "online" : "offline"}</small></div>)}</div>
         {room.me.role === "gm" ? <>
-          <label className="room-permission"><input type="checkbox" aria-label="Allow player editing" checked={room.playerEditing} disabled={busy || status === "offline"} onChange={e => {
+          <label className="room-permission"><input type="checkbox" aria-label="Allow player editing" checked={room.playerEditing} disabled={busy || status === "offline" || status === "update-required"} onChange={e => {
             const enabled = e.target.checked, previous = room;
             setRoom({ ...room, playerEditing: enabled });
             void act(async () => { try { setRoom(await client.current!.permissions(enabled)); } catch (error) { setRoom(previous); throw error; } });

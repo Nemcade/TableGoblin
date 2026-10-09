@@ -15,9 +15,9 @@ if not errorlevel 1 (
 )
 if not exist "dist\index.html" goto buildfirst
 if not exist ".server-runtime\room-state.cjs" goto buildfirst
+if not exist ".server-runtime\room-operations.cjs" goto buildfirst
 if not defined PORT set "PORT=4180"
-start "" "http://127.0.0.1:%PORT%/"
-"%GOBLIN_NODE%" "scripts\room-server.cjs"
+"%GOBLIN_NODE%" "scripts\launch-online.cjs"
 if errorlevel 1 pause
 exit /b
 :buildfirst
