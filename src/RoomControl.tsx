@@ -70,14 +70,14 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
         <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : "Reconnecting…"}</small></div>
         <div className="room-people">{room.participants.map(p => <div key={p.id}><i style={{ background: p.color, opacity: p.online ? 1 : .35 }} /><span>{p.name}</span><small>{p.role === "gm" ? "GM · " : ""}{p.online ? "online" : "offline"}</small></div>)}</div>
         {room.me.role === "gm" ? <>
-          <label className="room-permission"><input type="checkbox" aria-label="Allow player editing" checked={room.playerEditing} disabled={busy || status === "offline" || status === "update-required"} onChange={e => {
+          <label className="room-permission"><input type="checkbox" aria-label="Allow players to add objects and draw" checked={room.playerEditing} disabled={busy || status === "offline" || status === "update-required"} onChange={e => {
             const enabled = e.target.checked, previous = room;
             setRoom({ ...room, playerEditing: enabled });
             void act(async () => { try { setRoom(await client.current!.permissions(enabled)); } catch (error) { setRoom(previous); throw error; } });
-          }}/><span>Allow players to edit unlocked objects</span></label>
+          }}/><span>Allow players to add objects and draw</span></label>
           <label>Player invitation<input aria-label="Player invitation" readOnly value={inviteLink} onFocus={e => e.target.select()} /></label>
           <button className="widget-primary" onClick={() => void act(async () => { await navigator.clipboard.writeText(inviteLink); })}>Copy invitation</button>
-        </> : <p className="widget-note">{room.playerEditing ? "You can edit unlocked objects." : "Select and point freely. The GM controls table editing."}</p>}
+        </> : <p className="widget-note">You can edit your own and shared objects.{room.playerEditing ? " You can also add objects and draw on the canvas." : " Ask the GM to enable adding objects."}</p>}
         <p className="widget-note">Shapes, text, images and drawings are shared. Undo reverses your own edits. Pan, zoom, rulers and dice are personal. The GM controls mood, grid and cover.</p>
         {status === "offline" && <button className="widget-primary" disabled={busy} onClick={() => void act(async () => {
           await client.current!.reconnect();

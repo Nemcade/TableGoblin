@@ -3,9 +3,10 @@ import { defaultMood } from "./mood.ts";
 import { defaultGrid, defaultObscure } from "./table-widgets.ts";
 import { defaultDiceGroup } from "./dice-types.ts";
 import type { Point, Scene } from "./model.ts";
+import { locksAllowed, validAccess, type AccessMap, type DragLease } from "./room-permissions.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 2;
+export const ROOM_PROTOCOL = 3;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean };
 export type Presence = { id: string; selection: string[]; laser: Point | null };
 export type RoomState = {
@@ -15,6 +16,7 @@ export type RoomState = {
   versions: import("./room-operations.ts").Versions;
   history: { undo: boolean; redo: boolean };
   accepted: { id: string; revision: number }[];
+  access: AccessMap; leases: DragLease[];
   invite?: string;
 };
 /** Decode the API boundary; older servers can still display their saved table. */
@@ -30,9 +32,12 @@ export function readRoomState(value: unknown, previous?: RoomState): RoomState |
   const metadata = v.history && typeof v.history.undo === "boolean" && typeof v.history.redo === "boolean" &&
     v.versions && typeof v.versions === "object" && !Array.isArray(v.versions) && Object.values(v.versions).every(n => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= v.revision) &&
     Array.isArray(v.accepted) && v.accepted.every((r: any) => r && typeof r.id === "string" && Number.isSafeInteger(r.revision) && r.revision >= 0 && r.revision <= v.revision);
-  const protocol = v.protocol ?? (metadata ? ROOM_PROTOCOL : 0);
+  const protocol = v.protocol ?? (metadata ? 2 : 0);
   if (!Number.isSafeInteger(protocol) || protocol < 0 || protocol === ROOM_PROTOCOL && !metadata) return null;
-  return { ...v, protocol, table, versions: metadata ? v.versions : {}, history: metadata ? v.history : { undo: false, redo: false }, accepted: metadata ? v.accepted : [] } as RoomState;
+  if (protocol === ROOM_PROTOCOL && (!v.access || typeof v.access !== "object" || Array.isArray(v.access) || !Object.values(v.access).every(validAccess) ||
+    [...table.scene.objects.map(o => `object:${o.id}`), ...table.scene.strokes.map(o => `stroke:${o.id}`)].some(key => !validAccess(v.access[key])) ||
+    !Array.isArray(v.leases) || !v.leases.every((l: any) => l && typeof l.client === "string" && typeof l.actor === "string" && Number.isFinite(l.expires) && Array.isArray(l.objects) && l.objects.every((id: any) => typeof id === "string")))) return null;
+  return { ...v, protocol, table, access: v.access ?? {}, leases: v.leases ?? [], versions: metadata ? v.versions : {}, history: metadata ? v.history : { undo: false, redo: false }, accepted: metadata ? v.accepted : [] } as RoomState;
 }
 export const emptySharedTable = (): SharedTable => ({
   scene: { objects: [], strokes: [] }, mood: { ...defaultMood },
@@ -61,16 +66,5 @@ export function parseSharedTable(value: unknown): SharedTable | null {
     obscure: { ...snapshot.obscure, gm: false, gmOpacity: .28 } };
 }
 export function playerSceneAllowed(before: Scene, after: Scene): boolean {
-  const old = new Map(before.objects.map(o => [o.id, o])), next = new Map(after.objects.map(o => [o.id, o]));
-  const changed = new Set([...old.keys(), ...next.keys()].filter(id => JSON.stringify(old.get(id)) !== JSON.stringify(next.get(id))));
-  // A locked descendant also protects its ancestors from transforms/deletion.
-  for (const o of before.objects) if (o.locked) {
-    let id: string | null = o.id;
-    while (id) { if (changed.has(id)) return false; id = old.get(id)?.parentId ?? null; }
-  }
-  for (const o of after.objects) {
-    if (!!o.locked !== !!old.get(o.id)?.locked) return false;
-    if (changed.has(o.id) && o.parentId && old.get(o.parentId)?.locked) return false;
-  }
-  return true;
+  return locksAllowed(before, after);
 }

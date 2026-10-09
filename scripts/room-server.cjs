@@ -2,14 +2,17 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
-const { ROOM_PROTOCOL, emptySharedTable, parseSharedTable, playerSceneAllowed } = require("../.server-runtime/room-state.cjs");
+const { ROOM_PROTOCOL, emptySharedTable, parseSharedTable } = require("../.server-runtime/room-state.cjs");
 const runningBuild = require("./online-runtime.cjs").serverBuild();
 const { tableChanges, validOperation, operationConflict, applyChanges, expectations, inverseChanges, advanceVersions } = require("../.server-runtime/room-operations.cjs");
+const { requiredKeys } = require("../.server-runtime/room-operations.cjs");
+const { editsAllowed, canEdit, hierarchy, validAccess, assignNewAccess } = require("../.server-runtime/room-permissions.cjs");
 const secret = () => randomBytes(32).toString("base64url");
 const hash = value => createHash("sha256").update(value).digest("hex");
 const project = path.resolve(__dirname, ".."), root = path.join(project, "dist");
 const data = path.resolve(process.env.TABLE_GOBLIN_DATA || path.join(project, "room-data"));
 const rooms = new Map(), clients = new Map(), presence = new Map(), limits = new Map();
+const leases = new Map();
 const maxBody = 8 * 1024 * 1024;
 fs.mkdirSync(data, { recursive: true });
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
@@ -52,6 +55,13 @@ function load(id) {
       // and credentials, and begin entity versioning at the saved revision.
       room.versions ??= Object.fromEntries([...room.table.scene.objects.map(o => `object:${o.id}`), ...room.table.scene.strokes.map(s => `stroke:${s.id}`), "widget:mood", "widget:grid", "widget:obscure"].map(key => [key, room.revision]));
       room.history ??= []; room.receipts ??= [];
+      if (!room.access) {
+        const gm = room.members.find(m => m.role === "gm");
+        if (!gm) throw new Error("Missing room owner");
+        room.access = assignNewAccess(room.table, {}, gm.id);
+        for (const policy of Object.values(room.access)) policy.shared = room.playerEditing;
+      }
+      if (!Object.values(room.access).every(validAccess)) throw new Error("Invalid sharing data");
       rooms.set(id, room);
     } catch (e) { fail(e.code === "ENOENT" ? 404 : 503, e.code === "ENOENT" ? "Room not found." : "This room's saved data could not be opened. It has been kept intact."); }
   }
@@ -74,18 +84,25 @@ function people(room) {
 function state(room, me) {
   return { protocol: ROOM_PROTOCOL, id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
     me: people(room).find(p => p.id === me.id), participants: people(room), presence: [...(presence.get(room.id)?.values() || [])], table: room.table,
-    versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
+    access: room.access, leases: activeLeases(room), versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
     ...(me.role === "gm" ? { invite: room.invite } : {}) };
 }
 function historyStatus(room, actor) {
   return { undo: room.history.some(h => h.actor === actor && !h.undone), redo: room.history.some(h => h.actor === actor && h.undone) };
 }
-function authorizedTable(room, me, table) {
-  if (me.role !== "gm" && !room.playerEditing) fail(403, "The GM has not enabled player editing.");
-  if (me.role !== "gm") {
-    if (!playerSceneAllowed(room.table.scene, table.scene)) fail(403, "Players cannot edit locked objects or move their parent groups.");
-    if (["mood", "grid", "obscure"].some(key => JSON.stringify(table[key]) !== JSON.stringify(room.table[key]))) fail(403, "Only the GM can change the room's mood, grid and cover.");
-  }
+function authorizedTable(room, me, table, changes = tableChanges(room.table, table)) {
+  if (!editsAllowed(room.table, table, room.access, me.id, me.role === "gm", room.playerEditing)) fail(403, "This edit needs ownership or sharing permission. Locked placement and GM settings are protected.");
+  if (me.role !== "gm" && changes.some(c => /^(object|stroke):/.test(c.key) && room.access[c.key] && !canEdit(room.access, c.key, me.id))) fail(403, "Only the owner or a shared editor can change this object's stacking order.");
+}
+function activeLeases(room) { return [...(leases.get(room.id)?.values() || [])].filter(l => l.expires > Date.now()); }
+function publishLeases(room) { broadcast(room, "leases", activeLeases(room)); }
+function leaseConflict(room, me, client, keys) {
+  const ids = new Set(keys.filter(k => k.startsWith("object:")).map(k => k.slice(7)));
+  return activeLeases(room).find(l => !(l.actor === me.id && l.client === client) && l.objects.some(id => ids.has(id)));
+}
+function checkLeases(room, me, client, changes) {
+  const conflict = leaseConflict(room, me, client, requiredKeys(room.table, changes));
+  if (conflict) fail(409, `${room.members.find(m => m.id === conflict.actor)?.name || "Another player"} is moving this object. Try again when they finish.`);
 }
 function publishTable(room, actor, operationId) {
   for (const c of clients.get(room.id) || []) send(c, "table", { ...state(room, room.members.find(m => m.id === c.id)), actor, operationId });
@@ -124,12 +141,12 @@ const server = http.createServer(async (req, res) => {
         if (fs.readdirSync(data).filter(f => f.endsWith(".json")).length >= 200) fail(503, "This playtest server has reached its room limit.");
         const v = await body(req), profile = identity(v), token = secret();
         const room = { id: randomBytes(8).toString("hex"), title: typeof v.title === "string" ? v.title.trim().slice(0, 60) || "Shared table" : "Shared table",
-          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), versions: {}, history: [], receipts: [],
+          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), access: {}, versions: {}, history: [], receipts: [],
           members: [{ id: randomUUID(), ...profile, role: "gm", tokenHash: hash(token) }] };
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -154,12 +171,16 @@ const server = http.createServer(async (req, res) => {
         const connections = clients.get(room.id) || new Set();
         if (connections.size >= 48) fail(429, "Too many connections to this room.");
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-        const client = { id: me.id, res }; connections.add(client); clients.set(room.id, connections);
+        const client = { id: me.id, client: url.searchParams.get("client"), res }; connections.add(client); clients.set(room.id, connections);
         send(client, "state", state(room, me)); broadcastPeople(room);
         const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15000);
         res.on("close", () => {
           clearInterval(heartbeat); connections.delete(client);
           if (![...connections].some(c => c.id === me.id)) presence.get(room.id)?.delete(me.id);
+          if (![...connections].some(c => c.id === me.id && c.client === client.client)) {
+            const held = leases.get(room.id)?.get(client.client);
+            if (held?.actor === me.id) { leases.get(room.id).delete(client.client); publishLeases(room); }
+          }
           broadcastPeople(room);
         });
         return;
@@ -167,6 +188,39 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== "POST") fail(405, "Method not allowed.");
       rate(req, `commands:${room.id}:${me.id}`, 1200);
       const v = await body(req);
+      if (action === "leases") {
+        if (typeof v.client !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.client) || !["claim", "renew", "release"].includes(v.action)) fail(400, "Invalid drag request.");
+        const held = leases.get(room.id) || new Map(), previous = held.get(v.client);
+        if (previous && previous.actor !== me.id) fail(403, "This drag belongs to another player.");
+        if (v.action === "release") held.delete(v.client);
+        else if (v.action === "renew") {
+          if (!previous || previous.expires <= Date.now()) fail(409, "The drag timed out. Grab the object again.");
+          previous.expires = Date.now() + 5000;
+        } else {
+          if (!previous && activeLeases(room).length >= 48) fail(429, "Too many active drags. Finish a drag and try again.");
+          if (!Array.isArray(v.ids) || !v.ids.length || v.ids.length > 1000 || !v.ids.every(id => typeof id === "string" && room.table.scene.objects.some(o => o.id === id))) fail(400, "Choose existing objects to move.");
+          const objects = hierarchy(room.table.scene, v.ids);
+          if (objects.some(id => room.table.scene.objects.find(o => o.id === id).locked || !canEdit(room.access, `object:${id}`, me.id, me.role === "gm"))) fail(403, "This piece or its contents cannot be moved by you.");
+          const changes = v.ids.map(id => ({ key: `object:${id}`, value: room.table.scene.objects.find(o => o.id === id) }));
+          if (!Array.isArray(v.expected) || !v.expected.every(e => e && typeof e.key === "string" && Number.isSafeInteger(e.version)) || operationConflict(room.table, { changes, expected: v.expected }, room.versions)) fail(409, "This object changed. Grab it again from its latest position.");
+          checkLeases(room, me, v.client, changes);
+          held.set(v.client, { client: v.client, actor: me.id, objects: [...new Set([...(previous?.expires > Date.now() ? previous.objects : []), ...objects])], expires: Date.now() + 5000 });
+        }
+        leases.set(room.id, held); publishLeases(room);
+        return json(res, 200, { leases: activeLeases(room) });
+      }
+      if (action === "access") {
+        if (me.role !== "gm") fail(403, "Only the GM can assign or share objects.");
+        if (!Array.isArray(v.ids) || !v.ids.length || v.ids.length > 1000 || !v.ids.every(id => typeof id === "string" && room.table.scene.objects.some(o => o.id === id)) ||
+          !validAccess(v.policy) || ![v.policy.owner, ...v.policy.editors].every(id => room.members.some(m => m.id === id))) fail(400, "Choose an owner and editors from this room.");
+        if (v.revision !== room.revision) return json(res, 409, { error: "The room changed. Open sharing again to use the latest settings.", state: state(room, me) });
+        const ids = hierarchy(room.table.scene, v.ids), changes = ids.map(id => ({ key: `object:${id}`, value: room.table.scene.objects.find(o => o.id === id) }));
+        checkLeases(room, me, v.client, changes);
+        const access = { ...room.access }, versions = { ...room.versions }, revision = room.revision + 1;
+        for (const id of ids) { access[`object:${id}`] = structuredClone(v.policy); versions[`object:${id}`] = revision; }
+        const next = { ...room, access, versions, revision }; persist(next); Object.assign(room, next); publishTable(room, me.id);
+        return json(res, 200, state(room, me));
+      }
       if (action === "presence") {
         if (!v || !Array.isArray(v.selection) || v.selection.length > 64 || !v.selection.every(id => typeof id === "string" && id.length <= 128) ||
           (v.laser !== null && (!v.laser || ![v.laser.x, v.laser.y].every(n => typeof n === "number" && Number.isFinite(n) && Math.abs(n) < 1e7)))) fail(400, "Invalid pointer or selection.");
@@ -189,7 +243,6 @@ const server = http.createServer(async (req, res) => {
           if (receipt.digest !== digest) fail(409, "This operation identity has already been used for a different request.");
           return json(res, 200, state(room, me));
         }
-        if (me.role !== "gm" && !room.playerEditing) fail(403, "The GM has not enabled player editing.");
         let operation, entry;
         if (action === "operations") {
           if (!validOperation(v)) fail(400, "Invalid table operation.");
@@ -205,7 +258,8 @@ const server = http.createServer(async (req, res) => {
         });
         const table = applyChanges(room.table, operation.changes);
         if (!table || Buffer.byteLength(JSON.stringify(table)) > maxBody) fail(400, "Invalid or oversized table operation. The existing room has been kept intact.");
-        authorizedTable(room, me, table);
+        authorizedTable(room, me, table, operation.changes);
+        checkLeases(room, me, v.client, operation.changes);
         const revision = room.revision + 1, versions = advanceVersions(room.table, table, operation.changes, room.versions, revision);
         let history;
         if (entry) {
@@ -220,18 +274,19 @@ const server = http.createServer(async (req, res) => {
           const inverse = inverseChanges(room.table, operation.changes);
           history = [...room.history.filter(h => h.actor !== me.id || !h.undone), { id: v.id, actor: me.id, forward: operation.changes, inverse, expected: expectations(table, inverse, versions), beforeExpected: operation.expected, afterExpected: expectations(table, inverse, versions), undone: false }];
         }
-        const next = { ...room, table, revision, versions, history: trimHistory(history), receipts: [...room.receipts, { id: v.id, actor: me.id, revision, digest }].slice(-256) };
+        const next = { ...room, table, access: assignNewAccess(table, room.access, me.id), revision, versions, history: trimHistory(history), receipts: [...room.receipts, { id: v.id, actor: me.id, revision, digest }].slice(-256) };
         persist(next); Object.assign(room, next); publishTable(room, me.id, v.id);
         return json(res, 200, state(room, me));
       }
       if (action === "table") {
-        if (me.role !== "gm" && !room.playerEditing) fail(403, "The GM has not enabled player editing.");
         if (v.revision !== room.revision) return json(res, 409, { error: "The table changed in another window. The latest room version has been loaded; try your edit again.", state: state(room, me) });
         const table = parseSharedTable(v.table);
         if (!table) fail(400, "Invalid table. Rooms currently support shapes, text, drawings and PNG/JPG/WebP/GIF images (8 MB total). Media streams and files stay local.");
         authorizedTable(room, me, table);
         const changes = tableChanges(room.table, table), revision = room.revision + 1;
-        const next = { ...room, table, revision, versions: advanceVersions(room.table, table, changes, room.versions, revision) };
+        if (me.role !== "gm" && !room.playerEditing && !changes.length) fail(403, "Player creation is disabled.");
+        checkLeases(room, me, v.client, changes);
+        const next = { ...room, table, access: assignNewAccess(table, room.access, me.id), revision, versions: advanceVersions(room.table, table, changes, room.versions, revision) };
         persist(next); Object.assign(room, next);
         publishTable(room, me.id);
         return json(res, 200, { revision: room.revision });
@@ -252,6 +307,11 @@ const server = http.createServer(async (req, res) => {
 });
 const port = Number(process.env.PORT || 4180), host = process.env.HOST || "127.0.0.1";
 const presenceExpiry = setInterval(() => {
+  for (const [id, entries] of leases) {
+    let changed = false;
+    for (const [client, lease] of entries) if (lease.expires <= Date.now()) { entries.delete(client); changed = true; }
+    if (changed && rooms.has(id)) publishLeases(rooms.get(id));
+  }
   for (const [id, entries] of presence) {
     let changed = false;
     for (const entry of entries.values()) if (entry.laser && Date.now() - entry.seen > 1500) { entry.laser = null; changed = true; }

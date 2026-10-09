@@ -25,7 +25,7 @@ async function launcherTests(upstream) {
       child.stderr.on("data", c => process.stderr.write(c)); child.on("error", reject);
     });
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
-    assert.equal(health.protocol, 2); assert.equal(typeof health.build, "string");
+    assert.equal(health.protocol, 3); assert.equal(typeof health.build, "string");
     assert.equal((await runLauncher(port)).code, 0);
   } finally {
     // Terminate only the process tree this test just created, including its
@@ -36,14 +36,16 @@ async function launcherTests(upstream) {
 }
 // Mirror the original server's JSON/SSE wire format, while using an isolated
 // current server behind it for durable storage and authenticated identities.
-function legacy(value) {
+function legacy(value, protocol = 0) {
   if (!value || typeof value !== "object") return value;
-  const next = { ...value }; for (const key of ["protocol", "build", "versions", "history", "accepted"]) delete next[key];
-  if (next.state) next.state = legacy(next.state);
+  const next = { ...value }; for (const key of ["build", "access", "leases", ...(protocol === 0 ? ["protocol", "versions", "history", "accepted"] : [])]) delete next[key];
+  if (protocol === 2 && next.protocol !== undefined) next.protocol = 2;
+  if (next.state) next.state = legacy(next.state, protocol);
   return next;
 }
 module.exports = async function compatibilityTests(browser, upstream) {
   const target = new URL(upstream), contexts = [], pages = [], errors = [];
+  let protocol = 0;
   const proxy = http.createServer((req, res) => {
     const request = http.request({ hostname: target.hostname, port: target.port, path: req.url, method: req.method, headers: req.headers }, incoming => {
       const headers = { ...incoming.headers }; delete headers["content-length"];
@@ -57,8 +59,8 @@ module.exports = async function compatibilityTests(browser, upstream) {
             let frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
             const match = frame.match(/^data: (.+)$/m);
             if (match) {
-              let value = legacy(JSON.parse(match[1]));
-              if (frame.startsWith("event: table")) value = { revision: value.revision, table: value.table, actor: value.actor };
+              let value = legacy(JSON.parse(match[1]), protocol);
+              if (protocol === 0 && frame.startsWith("event: table")) value = { revision: value.revision, table: value.table, actor: value.actor };
               frame = frame.replace(/^data: .+$/m, "data: " + JSON.stringify(value));
             }
             res.write(frame + "\n\n");
@@ -67,7 +69,7 @@ module.exports = async function compatibilityTests(browser, upstream) {
         incoming.on("end", () => res.end()); res.on("close", () => request.destroy());
       } else if (incoming.headers["content-type"]?.startsWith("application/json")) {
         const chunks = []; incoming.on("data", chunk => chunks.push(chunk));
-        incoming.on("end", () => res.end(JSON.stringify(legacy(JSON.parse(Buffer.concat(chunks).toString())))));
+        incoming.on("end", () => res.end(JSON.stringify(legacy(JSON.parse(Buffer.concat(chunks).toString()), protocol))));
       } else incoming.pipe(res);
     });
     request.on("error", () => res.destroy()); req.pipe(request);
@@ -103,6 +105,14 @@ module.exports = async function compatibilityTests(browser, upstream) {
     await request(root + "/table", host.cookie, { revision: 1, table });
     for (const page of pages) await page.waitForFunction(() => document.querySelector("canvas").getContext("2d").getImageData(880, 450, 1, 1).data[3] > 0);
     await pages[1].reload(); await pages[1].getByLabel("Room connection status").filter({ hasText: "RESTART ROOM SERVER" }).waitFor();
+    protocol = 2;
+    for (const page of pages) {
+      await page.reload();
+      await page.getByLabel("Room connection status").filter({ hasText: "RESTART ROOM SERVER" }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).isEnabled(), false);
+      await page.getByRole("button", { name: "Close room controls", exact: true }).click();
+      await page.waitForFunction(() => document.querySelector("canvas").getContext("2d").getImageData(880, 450, 1, 1).data[3] > 0);
+    }
     assert.deepEqual(errors, [], "Missing history/versions and partial table events cause no uncaught exceptions");
     const launcher = await runLauncher(proxy.address().port);
     assert.equal(launcher.code, 1); assert.match(launcher.text, /Close its existing server window/);

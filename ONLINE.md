@@ -25,13 +25,17 @@ Browser identities and GM credentials use persistent, HttpOnly cookies scoped to
 - Shapes, text, raster images (PNG/JPG/WebP/GIF), artwork masks, nesting, object transforms, drawings, deletion, and locks.
 - GM mood, grid and visual Obscure edits. GM cover opacity stays local to the GM's view.
 - Colored selection outlines and laser points with participant names. Presence is transient; stale laser points expire and disconnected participants' selections disappear.
-- Durable room contents, roles, identities and editing permission. Server restart preserves them.
+- Durable room contents, roles, identities and object ownership/sharing. Server restart preserves them.
 
 Pan/zoom, current selection, pen preferences, rulers, preset libraries, and dice remain personal. Shared authoritative dice and live audio/video transport are subsequent stages. The Obscure cover remains a visual mask; room members receive the underlying content.
 
 ## Permissions and conflicts
 
-Players initially view, select, pan, measure and point. The GM can enable **Allow players to edit unlocked objects**. That grants collaborative table editing, while the GM retains atmosphere/grid/cover and lock controls. Locked objects and ancestors of locked descendants are protected from player edits. Server checks apply even to forged requests; display names and client-supplied roles cannot grant authority.
+Players initially view, select, pan, measure and point. The GM can enable **Allow players to add objects and draw**. Newly created pieces and freehand canvas drawings belong to their creator. Turning creation off still lets a player edit their owned and shared pieces. The GM retains atmosphere/grid/cover and lock controls.
+
+Right-click an object or a selection as the GM and open **Sharing**. Choose its owner, allow everyone to edit, or check specific editors, then **Apply sharing**. This applies to the entire selected hierarchy. New children retain their creator's ownership; nesting alone does not grant control over them. A shared parent cannot be moved, resized, rotated or deleted by a player if it contains protected pieces. A locked map can hold independent tokens that their owners can move freely. Locks protect placement; authorized recoloring and drawing do not move the background. Server checks cover direct commands, stacking order, legacy updates and undo; client-supplied identities cannot grant authority.
+
+Moving, rotating or resizing temporarily claims the piece and its contents for that browser. Another grab shows the holder's name and leaves the piece in place. Claims are renewed during the gesture and pending save, then released when saved, cancelled, disconnected or after a five-second timeout. Separate pieces can move at once. The peer's selection label shows **moving**; room geometry commits on pointer release. Drag claims are transient and never restored after a server restart.
 
 The browser submits operations with a unique request identity and versions for the affected objects, drawings or widgets. Two people can edit separate objects at once; unrelated incoming updates preserve an active drag, brush stroke or inline text session. Parent/child dependencies are checked together. Changes to the same object or affected hierarchy conflict rather than overwriting someone else's work. The latest room version opens, with **Export unsent edit** available to preserve the rejected version. Each object is one conflict unit, including text, image framing and drawings inside it; this does not merge simultaneous typing within one note.
 
@@ -39,7 +43,7 @@ Online pointer gestures commit on release, and text sessions commit when finishe
 
 Undo and Redo reverse only your own accepted operations. An unrelated edit by another participant remains intact. If the affected object or its hierarchy has changed afterward, reversal is refused with a clear explanation. Undo history and request receipts persist with the room, including through refresh and server restart. History retains at most 80 operations across the room, capped at 8 MB; the current table is always retained. A new edit clears only that participant's redo history.
 
-Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their version metadata without changing contents or credentials. Updates still broadcast full authoritative snapshots; separate asset storage and compact update broadcasts are future improvements. There are no object ownership assignments, observer roles, invite revocation, or drag leases yet.
+Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their metadata without changing contents or credentials: previously globally editable objects become shared, and otherwise belong to the GM. Updates still broadcast full authoritative snapshots; separate asset storage and compact update broadcasts are future improvements. Observer roles and invite revocation are not implemented yet.
 
 ## Host on the internet
 
@@ -64,4 +68,4 @@ npm run test:online
 npm run test:browser
 ```
 
-Online tests use separate browser contexts and an isolated temporary room directory. They check permissions, malformed/forged requests, overlapping and simultaneous independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table.
+Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table.

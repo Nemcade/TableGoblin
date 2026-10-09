@@ -6,6 +6,27 @@ import { surfaceName } from "./LiveFeeds";
 import { FontPicker, TextExtras, TextModeControl } from "./TextControls";
 import { textColor, textMode, type TextSettings } from "./text";
 import { NumericValue } from "./NumericValue";
+import { DevicePicker } from "./DevicePicker";
+
+function ObjectSharing({ engine, selection }: { engine: TableEngine; selection: Surface[] }) {
+  const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const initial = engine.roomAccess[`object:${selection[0].id}`] ?? { owner: engine.roomIdentity, shared: false, editors: [] };
+  const [policy, setPolicy] = useState(initial);
+  const owner = engine.roomParticipants.find(p => p.id === initial.owner);
+  return <div className="object-sharing">
+    <button aria-expanded={open} disabled={!engine.roomConnected} onClick={() => { setPolicy(initial); setError(""); setOpen(!open); }}>Sharing <small>{initial.shared ? "Everyone" : owner?.name ?? "Owner"} {open ? "⌃" : "⌄"}</small></button>
+    {open && <div className="object-sharing-settings">
+      <label>Owner</label><DevicePicker label="Object owner" value={policy.owner} disabled={busy} options={engine.roomParticipants.map(p => ({ value: p.id, label: `${p.name}${p.role === "gm" ? " · GM" : ""}` }))} onChange={owner => setPolicy({ ...policy, owner })} />
+      <label className="sharing-check"><input type="checkbox" aria-label="Everyone can edit" checked={policy.shared} disabled={busy} onChange={e => setPolicy({ ...policy, shared: e.target.checked })} />Everyone can edit</label>
+      {!policy.shared && engine.roomParticipants.filter(p => p.role !== "gm" && p.id !== policy.owner).map(p => <label className="sharing-check" key={p.id}>
+        <input type="checkbox" aria-label={`Allow ${p.name} to edit`} checked={policy.editors.includes(p.id)} disabled={busy} onChange={e => setPolicy({ ...policy, editors: e.target.checked ? [...policy.editors, p.id] : policy.editors.filter(id => id !== p.id) })} />{p.name}
+      </label>)}
+      <p className="widget-note">Applies to the selection and everything inside it. The GM can always edit; locks still protect placement.</p>
+      {error && <p role="alert" className="room-error">{error}</p>}
+      <button className="widget-primary" disabled={busy} onClick={() => { setBusy(true); setError(""); void engine.shareObjects(selection.map(o => o.id), policy).then(() => setOpen(false)).catch(e => setError(e.message)).finally(() => setBusy(false)); }}>Apply sharing</button>
+    </div>}
+  </div>;
+}
 
 function TextObjectSettings({ engine, object }: { engine: TableEngine; object: Surface }) {
   const [more, setMore] = useState(false), text = object.text!;
@@ -24,7 +45,7 @@ export function ObjectActions({ engine, selection, point, colors, onClose }: {
   const panel = useRef<HTMLDivElement>(null), single = selection.length === 1 ? selection[0] : null;
   const shapes = selection.filter(isShape);
   const allLocked = selection.every(obj => obj.locked), someLocked = selection.some(obj => obj.locked);
-  const editable = !engine.roomActive || engine.roomEditable && engine.roomConnected;
+  const editable = selection.every(o => engine.objectEditable(o.id));
   const manageLocks = !engine.roomActive || engine.roomGM && engine.roomConnected;
   useLayoutEffect(() => {
     const place = () => {
@@ -52,6 +73,8 @@ export function ObjectActions({ engine, selection, point, colors, onClose }: {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" /><path d={allLocked ? "M9 10V6a4 4 0 0 1 8 0" : "M8 10V6a4 4 0 0 1 8 0v4"} /></svg>
     </button>
     {someLocked && !allLocked && <button disabled={!manageLocks} onClick={() => { engine.setLocked(false); onClose(); }}>Unlock selection</button>}
+    {engine.roomActive && engine.roomGM && <ObjectSharing engine={engine} selection={selection} />}
+    {engine.roomActive && !engine.roomGM && <p className="widget-note">{editable ? "You can edit this selection." : "The GM can assign or share these objects with you."}</p>}
     {single?.kind === "text" && <button disabled={single.locked || !editable} onClick={() => { onClose(); engine.edit(single.id); }}>Edit text <small>Double-click</small></button>}
     {editable && single?.kind === "text" && !single.locked && <TextObjectSettings engine={engine} object={single} />}
     {single && (single.image || single.video) && <button disabled={single.locked || !editable} title={single.locked ? "Unlock to edit" : undefined} onClick={() => { onClose(); engine.edit(single.id); }}>{isShape(single) ? "Edit art" : "Crop"}</button>}
@@ -65,7 +88,7 @@ export function ObjectActions({ engine, selection, point, colors, onClose }: {
       <ColorControl label="Shape color" value={shapes[0].color} onChange={(value, preview) => engine.setSurfaceColor(value, preview)} />
       <div className="surface-swatches">{colors.map(color => <button key={color} style={{ background: color }} aria-label={`Surface color ${color}`} onClick={() => engine.setSurfaceColor(color)} />)}</div>
     </div>}
-    <button aria-label="Duplicate selection" disabled={!editable} onClick={() => { engine.duplicate(); onClose(); }}>Duplicate <small>Ctrl+D</small></button>
+    <button aria-label="Duplicate selection" disabled={!editable || engine.roomActive && !engine.roomGM && !engine.roomCreating} onClick={() => { engine.duplicate(); onClose(); }}>Duplicate <small>Ctrl+D</small></button>
     <button aria-label="Delete selected object" disabled={allLocked || !editable} title={allLocked ? "Unlock to delete" : undefined} onClick={() => { engine.delete(); onClose(); }}>Delete <small>Delete</small></button>
   </div>;
 }

@@ -45,7 +45,8 @@ import { waitForMediaData } from "./video-source";
 import { TableAudio } from "./audio";
 import { defaultMood, type Mood } from "./mood";
 import { isHexColor } from "./colors.ts";
-import { parseSharedTable, playerSceneAllowed, type SharedTable, type Participant, type Presence } from "./room-state";
+import { parseSharedTable, type SharedTable, type Participant, type Presence } from "./room-state";
+import { canEdit, editsAllowed, hierarchy, type AccessMap, type ObjectAccess, type DragLease } from "./room-permissions";
 import { tableChanges, applyChanges } from "./room-operations";
 import { LocalTableStore, tableFile, recoveryFile, readTableFile, type SaveStatus, type StoredTable, type TableSnapshot } from "./table-storage";
 import { parseDiceSetup } from "./presets";
@@ -176,6 +177,15 @@ export class TableEngine {
   roomEditable = true;
   roomGM = true;
   roomConnected = true;
+  roomCreating = true;
+  roomIdentity = "";
+  roomParticipants: Participant[] = [];
+  roomAccess: AccessMap = {};
+  private roomLeases: DragLease[] = [];
+  private roomBrowser = "";
+  private roomShare: ((ids: string[], policy: ObjectAccess) => Promise<void>) | null = null;
+  private roomDrag: ((ids: string[]) => void) | null = null;
+  private roomDragEnd: (() => void) | null = null;
   private roomBackup: StoredTable | null = null;
   private roomAccepted: SharedTable | null = null;
   private roomChange: (() => void) | null = null;
@@ -296,7 +306,7 @@ export class TableEngine {
               eraser: this.tool === "eraser",
             }
           : null,
-        this.transforms && this.gesture?.kind !== "marquee",
+        this.transforms && this.gesture?.kind !== "marquee" && [...this.selection].every(id => this.objectEditable(id, true)),
         this.mood,
         {
           dice: this.dice,
@@ -402,6 +412,41 @@ export class TableEngine {
     if (!editable || !connected) { this.cancel(); if (!["select", "laser", "measure"].includes(this.tool)) this.setTool("select"); }
     this.emit(false);
   }
+  setRoomAccess(identity: string, creating: boolean, access: AccessMap, participants: Participant[], share: (ids: string[], policy: ObjectAccess) => Promise<void>) {
+    this.roomIdentity = identity; this.roomCreating = creating; this.roomAccess = access; this.roomParticipants = participants; this.roomShare = share;
+  }
+  setRoomDrags(browser: string, leases: DragLease[], start?: (ids: string[]) => void, end?: () => void) {
+    this.roomBrowser = browser; this.roomLeases = leases;
+    if (start) this.roomDrag = start;
+    if (end) this.roomDragEnd = end;
+    this.invalidate(); this.emit(false);
+  }
+  shareObjects(ids: string[], policy: ObjectAccess) { return this.roomShare?.(ids, policy) ?? Promise.resolve(); }
+  roomNotice(message: string) { this.notify(message); }
+  abortRoomDrag() { this.cancel(); this.emit(false); }
+  busyObject(id: string, group = false) {
+    const ids = group ? hierarchy(this.scene, [id]) : [id];
+    return this.roomLeases.find(l => l.client !== this.roomBrowser && l.expires > Date.now() && l.objects.some(id => ids.includes(id)));
+  }
+  objectEditable(id: string, group = false): boolean {
+    if (!this.roomActive) return true;
+    if (!this.roomEditable || !this.roomConnected || this.busyObject(id, group)) return false;
+    const ids = group ? hierarchy(this.scene, [id]) : [id];
+    return ids.every(id => (canEdit(this.roomAccess, `object:${id}`, this.roomIdentity, this.roomGM) || this.roomCreating && !this.roomAccepted?.scene.objects.some(o => o.id === id)) &&
+      (!group || !this.scene.objects.find(o => o.id === id)?.locked));
+  }
+  private objectEditAllowed(id: string, group = false) {
+    if (this.objectEditable(id, group)) return true;
+    const busy = this.busyObject(id, group);
+    const locked = group && hierarchy(this.scene, [id]).some(id => this.scene.objects.find(o => o.id === id)?.locked);
+    this.notify(busy ? `${this.roomParticipants.find(p => p.id === busy.actor)?.name || "Another player"} is moving this object.` : locked ? "Unlock this object or its locked contents before moving or deleting it." : "The GM needs to share this object with you before you can edit it.");
+    return false;
+  }
+  private creationAllowed() {
+    if (!this.roomEditAllowed()) return false;
+    if (!this.roomActive || this.roomGM || this.roomCreating) return true;
+    this.notify("The GM has not enabled adding objects or drawing on the canvas."); return false;
+  }
   applyRoom(table: SharedTable) {
     this.cancel();
     this.surfaceColors.clear(); this.textColors.clear();
@@ -447,6 +492,7 @@ export class TableEngine {
   leaveRoom() {
     const backup = this.roomBackup;
     this.roomActive = false; this.roomChange = null; this.roomPeers = [];
+    this.roomAccess = {}; this.roomLeases = []; this.roomShare = this.roomDrag = this.roomDragEnd = null; this.roomCreating = true;
     this.roomReverse = null; this.roomHistory = { undo: false, redo: false };
     this.roomEditable = this.roomGM = this.roomConnected = true;
     this.roomBackup = null; this.roomAccepted = null;
@@ -485,7 +531,7 @@ export class TableEngine {
         const t = worldTransform(this.scene, obj), x = t.x * this.camera.zoom + this.camera.x, y = t.y * this.camera.zoom + this.camera.y;
         ctx.save(); ctx.translate(x, y); ctx.rotate(t.rotation);
         ctx.setLineDash([5, 4]); ctx.strokeRect(-t.width * this.camera.zoom / 2 - 4, -t.height * this.camera.zoom / 2 - 4, t.width * this.camera.zoom + 8, t.height * this.camera.zoom + 8);
-        ctx.setLineDash([]); ctx.fillText(person.name, -t.width * this.camera.zoom / 2, -t.height * this.camera.zoom / 2 - 10); ctx.restore();
+        ctx.setLineDash([]); ctx.fillText(person.name + (this.roomLeases.some(l => l.actor === person.id && l.objects.includes(id)) ? " · moving" : ""), -t.width * this.camera.zoom / 2, -t.height * this.camera.zoom / 2 - 10); ctx.restore();
       }
       if (presence?.laser) {
         const x = presence.laser.x * this.camera.zoom + this.camera.x, y = presence.laser.y * this.camera.zoom + this.camera.y;
@@ -646,7 +692,7 @@ export class TableEngine {
       .find((o) => (includeLocked || !o.locked) && containsSurface(p, o, worldTransform(this.scene, o)));
   }
   private commit(before: Scene) {
-    if (this.roomActive && (!this.roomEditAllowed() || (!this.roomGM && !playerSceneAllowed(before, this.scene)))) {
+    if (this.roomActive && (!this.roomEditAllowed() || !editsAllowed({ ...this.getRoomTable(), scene: before }, this.getRoomTable(), this.roomAccess, this.roomIdentity, this.roomGM, this.roomCreating))) {
       this.scene = before; this.cleanSelection(); this.emit(false); return;
     }
     if (this.roomActive && !parseSharedTable(this.getRoomTable())) {
@@ -807,6 +853,7 @@ export class TableEngine {
     this.cancel();
     const targets = this.scene.objects.filter(o => isShape(o) &&
       (this.surfaceColors.size ? this.surfaceColors.has(o.id) : this.selection.has(o.id)));
+    if (targets.some(o => !this.objectEditAllowed(o.id))) return;
     if (preview) {
       targets.forEach(o => { if (!this.surfaceColors.has(o.id)) this.surfaceColors.set(o.id, o.color); o.color = color; });
       this.emit(false);
@@ -820,6 +867,7 @@ export class TableEngine {
   }
   setTextColor(id: string, color: string | null, preview = false) {
     if (!this.roomEditAllowed()) return;
+    if (!this.objectEditAllowed(id)) return;
     if (color !== null && !isHexColor(color)) return;
     const obj = this.scene.objects.find(o => o.id === id && o.kind === "text" && !o.locked);
     if (!obj?.text) { this.textColors.delete(id); return; }
@@ -842,6 +890,7 @@ export class TableEngine {
       shape,
       this.world({ x: this.viewWidth / 2, y: this.viewHeight / 2 }),
     );
+    if (!this.creationAllowed()) return obj;
     obj.color = color;
     this.scene.objects.push(obj);
     this.selection = new Set([obj.id]);
@@ -852,6 +901,7 @@ export class TableEngine {
   }
   edit(id: string) {
     if (!this.roomEditAllowed()) return;
+    if (!this.objectEditAllowed(id)) return;
     if (this.editingId === id) return;
     if (this.editingId) this.closeEditor();
     this.cancel();
@@ -882,6 +932,7 @@ export class TableEngine {
   addText() {
     const before = clone(this.scene);
     const obj = this.add("text");
+    if (!this.scene.objects.some(o => o.id === obj.id)) return obj;
     this.undoStack.pop(); // Creation and its first typing session are one undoable action.
     this.edit(obj.id);
     this.textBefore = before;
@@ -889,6 +940,7 @@ export class TableEngine {
   }
   saveText(id: string, text: TextSettings, width: number, record = true) {
     if (!this.roomEditAllowed()) return;
+    if (!this.objectEditAllowed(id)) return;
     const obj = this.scene.objects.find(o => o.id === id && o.kind === "text" && !o.locked);
     if (!obj || !validText(text) || !Number.isFinite(width)) return;
     const before = clone(this.scene);
@@ -917,6 +969,7 @@ export class TableEngine {
   private fontsChanged = () => {
     let changed = false;
     for (const obj of this.scene.objects) if (obj.kind === "text" && obj.text) {
+      if (!this.objectEditable(obj.id)) continue;
       const box = textBox(obj.text, obj.width, this.canvas.getContext("2d")!);
       if (Math.abs(box.width - obj.width) > .1 || Math.abs(box.height - obj.height) > .1) {
         this.saveText(obj.id, obj.text, obj.width, false); changed = true;
@@ -929,6 +982,7 @@ export class TableEngine {
   }
   getMediaIssue(obj: Surface) { return this.renderer.fileIssue(obj); }
   saveImageView(id: string, view: ImageView) {
+    if (!this.objectEditAllowed(id)) return;
     const obj = this.scene.objects.find((o) => o.id === id);
     if (!obj || obj.locked) return;
     const before = clone(this.scene);
@@ -936,6 +990,7 @@ export class TableEngine {
     this.commit(before);
   }
   saveCrop(id: string, crop: Crop) {
+    if (!this.objectEditAllowed(id, true)) return;
     const obj = this.scene.objects.find((o) => o.id === id);
     if (!obj || obj.locked) return;
     const before = clone(this.scene);
@@ -984,6 +1039,7 @@ export class TableEngine {
     this.notify(`${next.name}: ${next.reason}. Right-click for object actions or press Delete to remove.`);
   }
   removeArt(id: string) {
+    if (!this.objectEditAllowed(id)) return;
     const obj = this.scene.objects.find((o) => o.id === id);
     if (!obj || !isShape(obj)) return;
     const before = clone(this.scene);
@@ -1004,10 +1060,12 @@ export class TableEngine {
     this.commit(before);
   }
   duplicate(ids = this.selection) {
+    if (hierarchy(this.scene, [...ids]).some(id => !this.objectEditAllowed(id))) return;
     const content = copyHierarchy(this.scene, ids);
     if (content.length) this.placeCopies(content, { x: 28, y: 28 });
   }
   private placeCopies(content: Surface[], offset?: Point) {
+    if (!this.creationAllowed()) return;
     this.cancel();
     const before = clone(this.scene);
     if (!offset) {
@@ -1060,6 +1118,7 @@ export class TableEngine {
   delete(ids = this.selection) {
     ids = new Set([...ids].filter(id => !this.scene.objects.find(o => o.id === id)?.locked));
     if (!ids.size) return;
+    if ([...ids].some(id => !this.objectEditAllowed(id, true))) return;
     this.cancel();
     const before = clone(this.scene);
     deleteSurfaces(this.scene, ids);
@@ -1086,6 +1145,7 @@ export class TableEngine {
       kind,
       p ?? this.world({ x: this.viewWidth / 2, y: this.viewHeight / 2 }),
     );
+    if (!this.creationAllowed()) return obj;
     if (kind === "text") {
       obj.text = { ...defaultText }; obj.name = "Text"; obj.width = 300;
       Object.assign(obj, textBox(obj.text, obj.width, this.canvas.getContext("2d")!));
@@ -1103,6 +1163,7 @@ export class TableEngine {
       maskSelection && this.selection.size === 1
         ? this.scene.objects.find((o) => this.selection.has(o.id) && isShape(o) && !o.locked)
         : undefined;
+    if (target ? !this.objectEditAllowed(target.id) : !this.creationAllowed()) return;
     const valid = files.filter((f) => f.type.startsWith("image/"));
     if (!valid.length) {
       this.notify("Drop an image file to place it on the table.");
@@ -1536,6 +1597,7 @@ export class TableEngine {
     }
     const obj = this.hit(p, this.tool !== "select"),
       before = clone(this.scene);
+    if (["pen", "highlighter", "eraser"].includes(this.tool) && (obj ? !this.objectEditAllowed(obj.id) : this.tool !== "eraser" && !this.creationAllowed())) return;
     if (this.tool === "eraser") {
       this.gesture = {
         kind: "erase",
@@ -1572,7 +1634,7 @@ export class TableEngine {
       this.emit();
       return;
     }
-    if (this.selection.size === 1 && this.transforms && !this.scene.objects.find(o => this.selection.has(o.id))?.locked) {
+    if (this.selection.size === 1 && this.transforms && [...this.selection].every(id => this.objectEditable(id, true)) && !this.scene.objects.find(o => this.selection.has(o.id))?.locked) {
       const selected = this.scene.objects.find((o) =>
         this.selection.has(o.id),
       )!;
@@ -1590,6 +1652,7 @@ export class TableEngine {
           transform: t,
           before,
         };
+        this.roomDrag?.([selected.id]);
         return;
       }
     }
@@ -1607,6 +1670,7 @@ export class TableEngine {
       }
       this.selection.add(obj.id);
     } else if (!this.selection.has(obj.id)) this.selection = new Set([obj.id]);
+    if ([...this.selection].some(id => !this.objectEditAllowed(id, true))) { this.emit(false); return; }
     const ids = [...this.selection].filter(
       (id) =>
         !this.scene.objects.find(o => o.id === id)?.locked &&
@@ -1637,6 +1701,7 @@ export class TableEngine {
       oldParents,
       before,
     };
+    this.roomDrag?.(ids);
     this.emit();
   };
   private pointerMove = (e: PointerEvent) => {
@@ -1649,7 +1714,7 @@ export class TableEngine {
         let cursor = "default";
         if (this.selection.size === 1 && this.transforms) {
           const obj = this.scene.objects.find((o) => this.selection.has(o.id));
-          if (obj && !obj.locked) {
+          if (obj && !obj.locked && this.objectEditable(obj.id, true)) {
             const i = handlePositions(
               worldTransform(this.scene, obj),
               this.camera,
@@ -1676,7 +1741,10 @@ export class TableEngine {
             }
           }
         }
-        if (cursor === "default" && this.hit(p, false)) cursor = "grab";
+        if (cursor === "default") {
+          const hit = this.hit(p, false);
+          if (hit && this.objectEditable(hit.id, true)) cursor = "grab";
+        }
         this.canvas.style.cursor = this.space ? "grab" : cursor;
       }
       this.invalidate();
@@ -1725,6 +1793,7 @@ export class TableEngine {
       const excluded = new Set(
         g.ids.flatMap((id) => [id, ...descendants(this.scene, id)]),
       );
+      for (const obj of this.scene.objects) if (!obj.locked && !this.objectEditable(obj.id)) excluded.add(obj.id);
       const next =
         g.ids.length === 1
           ? (findParent(
@@ -1869,6 +1938,7 @@ export class TableEngine {
         const excluded = new Set(
           g.ids.flatMap((id) => [id, ...descendants(this.scene, id)]),
         );
+        for (const obj of this.scene.objects) if (!obj.locked && !this.objectEditable(obj.id)) excluded.add(obj.id);
         for (const id of g.ids) {
           const obj = this.scene.objects.find((o) => o.id === id)!;
           const parent = findParent(this.scene, obj, excluded);
@@ -1880,6 +1950,7 @@ export class TableEngine {
     this.candidate = null;
     if ("before" in g) this.commit(g.before);
     else this.emit();
+    if (["move", "resize", "rotate"].includes(g.kind)) this.roomDragEnd?.();
     this.canvas.style.cursor =
       this.tool === "select"
         ? "default"
@@ -1925,6 +1996,7 @@ export class TableEngine {
       t = obj ? worldTransform(this.scene, obj) : undefined;
     const list = obj ? obj.strokes : this.scene.strokes;
     const remaining = list.filter((stroke) => {
+      if (this.roomActive && !obj && !canEdit(this.roomAccess, `stroke:${stroke.id}`, this.roomIdentity, this.roomGM) && this.roomAccepted?.scene.strokes.some(s => s.id === stroke.id)) return true;
       const pts = t ? stroke.points.map((p) => toWorld(p, t)) : stroke.points;
       const radius =
         12 +
@@ -1938,6 +2010,7 @@ export class TableEngine {
     this.invalidate();
   }
   private cancel() {
+    const dragging = this.gesture && ["move", "resize", "rotate"].includes(this.gesture.kind);
     if (this.gesture?.kind === "marquee") this.selection = new Set(this.gesture.previous);
     if (this.gesture?.kind === "measure")
       this.measurement = this.gesture.previous;
@@ -1945,6 +2018,7 @@ export class TableEngine {
       this.scene = this.gesture.before;
     this.gesture = null;
     this.candidate = null;
+    if (dragging) this.roomDragEnd?.();
     this.invalidate();
   }
   private pointerCancel = () => {

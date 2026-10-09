@@ -22,7 +22,8 @@ module.exports = async function syncTests(browser, base) {
       const table = structuredClone(state.table);
       table.scene.objects = ["a", "b"].map((id, i) => ({ id, name: id, kind: "shape", shape: "circle", x: i ? 200 : -200, y: 0, width: 100, height: 100, rotation: 0, parentId: null, color: "#aabbcc", strokes: [] }));
       const changes = GoblinSyncTest.tableChanges(state.table, table);
-      await post(`/api/rooms/${state.id}/operations`, { id: crypto.randomUUID(), changes, expected: GoblinSyncTest.expectations(state.table, changes, state.versions) });
+      const created = await post(`/api/rooms/${state.id}/operations`, { id: crypto.randomUUID(), changes, expected: GoblinSyncTest.expectations(state.table, changes, state.versions) });
+      await post(`/api/rooms/${state.id}/access`, { ids: ["a", "b"], policy: { owner: state.me.id, shared: true, editors: [] }, revision: created.revision });
       await post(`/api/rooms/${state.id}/permissions`, { playerEditing: true });
       return state;
     });
@@ -55,6 +56,28 @@ module.exports = async function syncTests(browser, base) {
     await Promise.all(pages.map(p => wait(p, () => engine.scene.objects.find(o => o.id === "a").x === -200 && engine.scene.objects.find(o => o.id === "b").x === 160)));
     await gm.evaluate(() => engine.redo());
     await Promise.all(pages.map(p => wait(p, () => engine.scene.objects.find(o => o.id === "a").x === -160)));
+    // Both browsers begin grabbing the same piece before either lease arrives.
+    // The first accepted claim wins; the other gesture rolls back quietly.
+    let acceptGM, acceptPlayer, claims = 0;
+    const gmClaim = new Promise(r => acceptGM = r), playerClaim = new Promise(r => acceptPlayer = r);
+    for (const [i, page] of pages.entries()) await page.route("**/leases", async route => {
+      if (route.request().postDataJSON().action !== "claim") return route.continue();
+      claims++; await (i ? playerClaim : gmClaim); await route.continue();
+    });
+    for (const page of pages) {
+      const grab = await point(page, "a"); await page.mouse.move(grab.x, grab.y); await page.mouse.down(); await page.mouse.move(grab.x + 25, grab.y + 15);
+    }
+    const claimDeadline = Date.now() + 5000;
+    while (claims < 2 && Date.now() < claimDeadline) await gm.waitForTimeout(25);
+    assert.equal(claims, 2); acceptGM();
+    await wait(gm, () => client.state.leases.some(l => l.actor === client.state.me.id)); acceptPlayer();
+    await wait(player, () => engine.gesture === null);
+    assert.equal(await player.evaluate(() => engine.scene.objects.find(o => o.id === "a").x), -160);
+    assert.ok(await player.evaluate(() => notices.some(n => n.includes("Sync GM") && n.includes("moving"))));
+    assert.equal(await gm.evaluate(() => engine.gesture?.kind), "move");
+    await gm.keyboard.press("Escape"); await gm.mouse.up(); await player.mouse.up();
+    await wait(player, () => client.state.leases.length === 0);
+    for (const page of pages) { await page.unroute("**/leases"); await page.evaluate(() => { notices.length = 0; }); }
     // An unrelated remote edit must not cancel a drag or undo its saved content
     // when the local pointer gesture is subsequently cancelled with Escape.
     const pos = await point(gm, "a"); await gm.mouse.move(pos.x, pos.y); await gm.mouse.down(); await gm.mouse.move(pos.x + 20, pos.y + 20);
@@ -128,8 +151,34 @@ module.exports = async function syncTests(browser, base) {
     await wait(gm, () => status === "connected"); await gm.unroute("**/operations");
     assert.equal(await gm.evaluate(() => engine.scene.objects.find(o => o.id === "b").color), "#5577cc", "A late rejection cannot load an older snapshot over a newer remote edit");
     assert.equal(await gm.evaluate(() => client.rejectedDraft.scene.objects.find(o => o.id === "a").color), "#8899aa", "The original conflicting edit remains available for export");
+    // Position a newly added object before its first save. It must not vanish
+    // because there is no server entity to lease until creation is accepted.
+    await gm.evaluate(() => { engine.setTool("select"); window.freshId = engine.addShape("circle").id; });
+    const fresh = await gm.evaluate(() => ({ id: freshId, x: engine.camera.x, y: engine.camera.y }));
+    await gm.mouse.move(fresh.x, fresh.y); await gm.mouse.down(); await gm.mouse.move(fresh.x + 40, fresh.y + 100, { steps: 3 }); await gm.mouse.up();
+    await wait(gm, () => status === "connected" && client.state.table.scene.objects.some(o => o.id === freshId));
+    await player.waitForFunction(id => engine.scene.objects.some(o => o.id === id), fresh.id);
+    assert.equal(await gm.evaluate(() => notices.some(n => n.includes("Choose existing objects"))), false);
+    // Keep the first drag's HTTP acknowledgement pending while grabbing it
+    // again. The browser must retain its claim until both moves are saved.
+    let releaseDragAck, dragAckHeld = false;
+    const dragAck = new Promise(r => releaseDragAck = r);
+    await gm.route("**/operations", async route => {
+      if (dragAckHeld) return route.continue();
+      dragAckHeld = true; const response = await route.fetch(); await dragAck; await route.fulfill({ response });
+    });
+    const startFreshX = await gm.evaluate(() => engine.scene.objects.find(o => o.id === freshId).x);
+    for (let i = 0; i < 2; i++) {
+      const grab = await point(gm, fresh.id); await gm.mouse.move(grab.x, grab.y); await gm.mouse.down(); await gm.mouse.move(grab.x + 12, grab.y + 5); await gm.mouse.up();
+      if (!i) await gm.waitForFunction(x => client.state.table.scene.objects.find(o => o.id === freshId).x === x + 12, startFreshX);
+    }
+    assert.ok(await gm.evaluate(() => client.state.leases.some(l => l.client === client.browser)), "The claim remains held during the pending save");
+    releaseDragAck();
+    await gm.waitForFunction(x => status === "connected" && client.state.table.scene.objects.find(o => o.id === freshId).x === x + 24, startFreshX);
+    await gm.unroute("**/operations");
+    await wait(gm, () => client.state.leases.length === 0);
     assert.deepEqual(errors, []);
-    console.log("PASS: real concurrent browser drags, actor undo/redo, preserved dragging/typing/brush references, lost acknowledgements and late HTTP replies");
+    console.log("PASS: real concurrent browser drags, same-piece grab race and Escape release, actor undo/redo, preserved dragging/typing/brush references, lost acknowledgements and late HTTP replies");
   } catch (error) {
     console.error("Sync browser diagnostic:", JSON.stringify(await Promise.all(pages.map(p => p.evaluate(() => ({ status, scene: window.engine?.scene, revision: window.client?.state.revision, notices: window.notices })).catch(() => null)))));
     throw error;

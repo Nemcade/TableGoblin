@@ -1,6 +1,6 @@
 # Internet playtest plan
 
-The `feature/online-rooms` branch includes a working room prototype with versioned object operations, retry deduplication and actor-specific Undo/Redo. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; per-object ownership, drag leases, dedicated assets, WebRTC and authoritative shared dice are still future work.
+The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication and actor-specific Undo/Redo. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; dedicated assets, WebRTC and authoritative shared dice are still future work.
 
 ## First playable room
 
@@ -19,7 +19,7 @@ Keep the first playtest to 2–6 participants, static images, shapes, drawing, n
 
 ## Permissions
 
-Provisional default: the host manages the room, and players edit objects they own or that the host shares with them. A room-level switch can permit editing shared objects by everyone. The exact default can be adjusted after the first playtest.
+Implemented default: the host manages the room, and players edit objects they own or that the host shares with them. A room-level switch permits new objects and canvas drawing; each object's Sharing menu controls who can edit it.
 
 | Action | Host | Player | Observer |
 | --- | --- | --- | --- |
@@ -30,7 +30,7 @@ Provisional default: the host manages the room, and players edit objects they ow
 | Change shared mood, grid, obscure layer | Yes | Explicit grant | No |
 | Change roles, invitations, permissions | Yes | No | No |
 
-Give objects a small access policy: owner ID, shared-edit flag, and optional editor IDs. Check permission for the whole affected hierarchy before moving, deleting, reparenting, or copying an object. Otherwise a permitted parent could become a way to move a protected child. Child access must be consistent with its parent; reject contradictory combinations or require the host to resolve them.
+Objects have a small access policy: owner ID, shared-edit flag, and optional editor IDs. Check permission for the whole affected hierarchy before moving, deleting or reparenting an object. Otherwise a permitted parent could become a way to move a protected child. The host's Sharing action explicitly applies to the selected hierarchy; independently owned tokens remain movable on locked backgrounds. These are editing permissions; all room participants still receive and can inspect the shared artwork.
 
 The server enforces every mutation and asset request. Hiding a toolbar button is only feedback. Reject forged IDs, invalid geometry, denied edits, oversized uploads, and actions against stale object revisions. Use brief server-managed drag ownership so two people grabbing the same object receive clear feedback instead of alternating jumps. Release it on completion, disconnect, or timeout.
 

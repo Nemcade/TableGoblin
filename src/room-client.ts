@@ -2,6 +2,7 @@ import type { TableEngine } from "./engine";
 import { ROOM_PROTOCOL, readRoomState, sharedSnapshot, type RoomState, type SharedTable } from "./room-state";
 import { tableFile } from "./table-storage";
 import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation } from "./room-operations";
+import { editsAllowed, hierarchy, type ObjectAccess, type DragLease } from "./room-permissions";
 export type RoomStatus = "connected" | "saving" | "offline" | "update-required";
 export class RoomClient {
   state: RoomState;
@@ -18,6 +19,11 @@ export class RoomClient {
   private presenceSentAt = 0;
   private presenceInFlight = false;
   private warnedVersion = false;
+  private browser = crypto.randomUUID();
+  private leaseWork: Promise<void> = Promise.resolve();
+  private leasePending = 0;
+  private leased = false;
+  private leaseTimer: ReturnType<typeof setInterval>;
   rejectedDraft: SharedTable | null = null;
   constructor(private engine: TableEngine, state: RoomState,
     private update: (state: RoomState, status: RoomStatus) => void,
@@ -27,7 +33,13 @@ export class RoomClient {
     this.state = decoded;
     this.configurePermissions(false);
     engine.enterRoom(decoded.table, () => this.schedule());
-    this.source = new EventSource(`/api/rooms/${state.id}/events`);
+    engine.setRoomDrags(this.browser, decoded.leases, ids => this.claimDrag(ids), () => queueMicrotask(() => void this.releaseIdleDrag()));
+    this.source = new EventSource(`/api/rooms/${state.id}/events?client=${this.browser}`);
+    this.source.addEventListener("leases", e => {
+      if (this.closed) return;
+      const leases = JSON.parse((e as MessageEvent).data) as DragLease[];
+      this.state = { ...this.state, leases }; engine.setRoomDrags(this.browser, leases);
+    });
     this.source.addEventListener("state", e => this.receiveEvent(e));
     this.source.addEventListener("table", e => {
       if (this.closed) return;
@@ -45,6 +57,13 @@ export class RoomClient {
     window.addEventListener("online", this.online);
     window.addEventListener("beforeunload", this.beforeUnload);
     this.presenceTimer = setInterval(() => void this.sendPresence(), 120);
+    this.leaseTimer = setInterval(() => {
+      if (this.leased && this.connected && !this.leasePending) this.leaseWork = this.leaseWork.then(async () => {
+        if (!this.leased || this.closed) return;
+        try { await this.leaseRequest("renew"); }
+        catch { this.leased = false; this.engine.abortRoomDrag(); this.engine.roomNotice("The drag connection was interrupted. Grab the object again."); }
+      });
+    }, 1000);
   }
   private offline = () => {
     if (this.closed || !this.connected) return;
@@ -62,7 +81,8 @@ export class RoomClient {
   };
   private configurePermissions(connected: boolean) {
     const supported = this.state.protocol === ROOM_PROTOCOL;
-    this.engine.setRoomPermissions(supported && this.state.me.role === "gm", supported && (this.state.me.role === "gm" || this.state.playerEditing), connected);
+    this.engine.setRoomAccess(this.state.me.id, this.state.playerEditing, this.state.access, this.state.participants, (ids, policy) => this.share(ids, policy));
+    this.engine.setRoomPermissions(supported && this.state.me.role === "gm", supported, connected);
   }
   private receiveEvent(event: Event) {
     try { this.receiveState(JSON.parse((event as MessageEvent).data)); }
@@ -91,7 +111,8 @@ export class RoomClient {
     }
     const changes = tableChanges(base, this.engine.getRoomTable());
     const operation = { id: "local-rebase-only", changes, expected: expectations(base, changes, versions) };
-    const permitted = next.me.role === "gm" || next.playerEditing;
+    const local = applyChanges(next.table, changes);
+    const permitted = !!local && editsAllowed(next.table, local, next.access, next.me.id, next.me.role === "gm", next.playerEditing);
     const conflict = changes.length > 0 && (!permitted || operationConflict(next.table, operation, next.versions));
     const merged = conflict ? null : applyChanges(next.table, changes);
     if (conflict || !merged) {
@@ -99,6 +120,7 @@ export class RoomClient {
       this.engine.applyRoom(next.table);
     } else this.engine.mergeRoom(merged);
     this.state = next; this.connected = navigator.onLine;
+    this.engine.setRoomDrags(this.browser, next.leases);
     this.engine.acknowledgeRoom(next.table);
     this.configurePermissions(this.connected);
     this.engine.setRoomHistory(next.history, redo => void this.reverse(redo));
@@ -123,15 +145,15 @@ export class RoomClient {
     if (this.closed || !this.connected || this.inFlight || !this.pending) return;
     // Pointer gestures and inline text sessions commit when finished. A remote
     // event must not turn their intermediate state into a durable operation.
-    if (this.engine.gesture || this.engine.editingId) { this.schedule(); return; }
+    if (this.engine.gesture || this.engine.editingId || this.leasePending) { this.schedule(); return; }
     const changes = tableChanges(this.state.table, this.engine.getRoomTable());
     this.pending = false;
-    if (!this.flight && !changes.length) { this.updateStatus(); return; }
+    if (!this.flight && !changes.length) { this.updateStatus(); void this.releaseIdleDrag(); return; }
     if (!this.flight) this.flight = { operation: { id: crypto.randomUUID(), changes, expected: expectations(this.state.table, changes, this.state.versions) }, acknowledged: false };
     if (this.flight.acknowledged) { this.flight = null; if (changes.length) this.schedule(); else this.updateStatus(); return; }
     this.inFlight = true; this.update(this.state, "saving");
     try {
-      const response = await fetch(`/api/rooms/${this.state.id}/operations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.flight.operation), signal: AbortSignal.timeout(15000) });
+      const response = await fetch(`/api/rooms/${this.state.id}/operations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...this.flight.operation, client: this.browser }), signal: AbortSignal.timeout(15000) });
       const result = await response.json();
       if (this.closed) return;
       if (!response.ok) {
@@ -147,7 +169,7 @@ export class RoomClient {
       if (!this.closed) { this.pending = true; this.connected = false; this.error("The connection was interrupted. Your edit remains in this window. Reconnect or export it before leaving."); }
     } finally {
       this.inFlight = false;
-      if (!this.closed) { this.configurePermissions(this.connected); this.updateStatus(); if (this.pending && this.connected) this.schedule(); }
+      if (!this.closed) { this.configurePermissions(this.connected); this.updateStatus(); if (this.pending && this.connected) this.schedule(); void this.releaseIdleDrag(); }
     }
   }
   private updateStatus() {
@@ -165,7 +187,7 @@ export class RoomClient {
     this.reversing ??= { id: crypto.randomUUID(), redo };
     try {
       const request = this.reversing;
-      const response = await fetch(`/api/rooms/${this.state.id}/${request.redo ? "redo" : "undo"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: request.id }), signal: AbortSignal.timeout(15000) });
+      const response = await fetch(`/api/rooms/${this.state.id}/${request.redo ? "redo" : "undo"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: request.id, client: this.browser }), signal: AbortSignal.timeout(15000) });
       const result = await response.json();
       if (this.closed) return;
       if (response.ok) this.receiveState(result);
@@ -187,6 +209,46 @@ export class RoomClient {
   async permissions(playerEditing: boolean) {
     return await roomRequest(`/api/rooms/${this.state.id}/permissions`, { playerEditing });
   }
+  private async share(ids: string[], policy: ObjectAccess) {
+    await this.settle();
+    this.receiveState(await roomRequest(`/api/rooms/${this.state.id}/access`, { ids, policy, revision: this.state.revision, client: this.browser }));
+  }
+  private async leaseRequest(action: "claim" | "renew" | "release", ids?: string[]) {
+    const changes = (ids ?? []).map(id => ({ key: `object:${id}`, value: this.state.table.scene.objects.find(o => o.id === id)! }));
+    const response = await fetch(`/api/rooms/${this.state.id}/leases`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, client: this.browser, ...(ids ? { ids, expected: expectations(this.state.table, changes, this.state.versions) } : {}) }), signal: AbortSignal.timeout(5000) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "This object could not be grabbed.");
+    if (!this.closed) { this.state = { ...this.state, leases: result.leases }; this.engine.setRoomDrags(this.browser, result.leases); }
+  }
+  private claimDrag(ids: string[]) {
+    if (!ids.length || this.closed) return;
+    // A new piece has no peer-visible version to claim yet. Preserve it when
+    // it is positioned immediately, before its first debounced save.
+    const known = new Set(hierarchy(this.engine.scene, ids).filter(id => this.state.table.scene.objects.some(o => o.id === id)));
+    ids = [...known].filter(id => !known.has(this.state.table.scene.objects.find(o => o.id === id)?.parentId ?? ""));
+    if (!ids.length) return;
+    if (this.leased && this.state.leases.some(l => l.client === this.browser && l.expires > Date.now() && ids.every(id => l.objects.includes(id)))) return;
+    const gesture = this.engine.gesture, scope = hierarchy(this.state.table.scene, ids);
+    this.leasePending++;
+    this.leaseWork = this.leaseWork.then(async () => {
+      if (this.closed) return;
+      try { await this.leaseRequest("claim", ids); this.leased = true; }
+      catch (error) {
+        if (this.closed) return;
+        if (this.engine.gesture === gesture) this.engine.abortRoomDrag();
+        const remaining = tableChanges(this.state.table, this.engine.getRoomTable()).filter(c => !scope.includes(c.key.slice(7)));
+        this.engine.mergeRoom(applyChanges(this.state.table, remaining) ?? this.state.table);
+        this.engine.roomNotice(error instanceof Error ? error.message : "This object could not be grabbed.");
+      }
+    }).finally(() => { this.leasePending--; if (!this.closed) { if (this.pending) this.schedule(); void this.releaseIdleDrag(); } });
+  }
+  private async releaseIdleDrag() {
+    if (!this.leased || this.leasePending || this.inFlight || this.engine.gesture || tableChanges(this.state.table, this.engine.getRoomTable()).length) return;
+    // Serialize a release with the next claim, including a quick second grab.
+    this.leased = false;
+    this.leaseWork = this.leaseWork.then(() => this.leaseRequest("release")).catch(() => {});
+  }
   requestSave() { this.schedule(); }
   async exportRejected() {
     if (!this.rejectedDraft) return;
@@ -203,7 +265,8 @@ export class RoomClient {
     if (this.pending || !this.connected) throw new Error("The room is offline. Rejoin or export your current table before leaving.");
   }
   close() {
-    this.closed = true; this.source.close(); clearInterval(this.presenceTimer);
+    this.closed = true; this.source.close(); clearInterval(this.presenceTimer); clearInterval(this.leaseTimer);
+    void fetch(`/api/rooms/${this.state.id}/leases`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "release", client: this.browser }), keepalive: true }).catch(() => {});
     window.removeEventListener("offline", this.offline); window.removeEventListener("online", this.online);
     window.removeEventListener("beforeunload", this.beforeUnload);
     if (this.timer) clearTimeout(this.timer);
