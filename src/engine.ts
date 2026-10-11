@@ -45,7 +45,7 @@ import { waitForMediaData } from "./video-source";
 import { TableAudio } from "./audio";
 import { defaultMood, type Mood } from "./mood";
 import { isHexColor } from "./colors.ts";
-import { parseSharedTable, type SharedTable, type Participant, type Presence } from "./room-state";
+import { parseSharedTable, sharedSnapshot, type SharedTable, type Participant, type Presence } from "./room-state";
 import { viewFromCamera, cameraAtView, type RoomView } from "./room-presence";
 import { canEdit, editsAllowed, hierarchy, type AccessMap, type ObjectAccess, type DragLease } from "./room-permissions";
 import { tableChanges, applyChanges } from "./room-operations";
@@ -56,6 +56,7 @@ import { diceArea, type RollArea } from "./dice-throw";
 import { emptyRoomDice, type RoomDice } from "./room-dice";
 import type { DiceSetup } from "./dice-types";
 import { roomImage, inlineRoomArtwork } from "./room-artwork";
+import { roomMedia, roomMediaLimit, inlineRoomMedia } from "./room-media";
 import {
   defaultGrid,
   defaultObscure,
@@ -364,7 +365,7 @@ export class TableEngine {
     let converted = false;
     for (const obj of this.scene.objects) {
       const video = this.renderer.videos.get(obj.id)?.video;
-      if (obj.video && obj.kind === "video" && video && video.readyState >= 2 && !video.error && video.videoWidth === 0 && video.videoHeight === 0 && video.duration > 0) {
+      if (!this.roomActive && obj.video && obj.kind === "video" && video && video.readyState >= 2 && !video.error && video.videoWidth === 0 && video.videoHeight === 0 && video.duration > 0) {
         obj.kind = "audio"; obj.audio = obj.video; delete obj.video;
         delete obj.sourceWidth; delete obj.sourceHeight; delete obj.crop;
         obj.paused = true; obj.volume ??= .65; obj.loop ??= false;
@@ -426,7 +427,7 @@ export class TableEngine {
     if (save && this.roomActive && !this.gesture) this.roomChange?.();
   }
   getRoomTable(): SharedTable {
-    return { scene: clone(this.scene), mood: { ...this.mood }, grid: { ...this.grid },
+    return { scene: this.sharedScene(this.scene), mood: { ...this.mood }, grid: { ...this.grid },
       obscure: { ...structuredClone(this.obscure), gm: false, gmOpacity: .28 } };
   }
   enterRoom(table: SharedTable, change: () => void) {
@@ -451,6 +452,23 @@ export class TableEngine {
     this.roomDiceLoading = false;
     this.refreshRoomDice(); this.emit(false);
   }
+  private sharedScene(scene: Scene) {
+    const result = clone(scene);
+    // Playback is personal in this transport stage. Listening never becomes
+    // an object command; geometry, private file references and crops are shared.
+    for (const obj of result.objects) if (obj.video || obj.audio) {
+      obj.paused = !!obj.audio; obj.loop = !!obj.video;
+      if (obj.audio) obj.volume = .65;
+    }
+    return result;
+  }
+  private keepRoomPlayback(incoming: Scene, previous: Scene) {
+    for (const obj of incoming.objects) if (obj.video || obj.audio) {
+      const old = previous.objects.find(o => o.id === obj.id && o.video === obj.video && o.audio === obj.audio);
+      if (old) { obj.paused = old.paused; obj.volume = old.volume; obj.loop = old.loop; }
+    }
+  }
+  roomMediaBlob(ref: string) { return this.assets.get(ref); }
   setRoomPermissions(gm: boolean, editable: boolean, connected: boolean) {
     this.roomGM = gm; this.roomEditable = editable; this.roomConnected = connected;
     if (!editable || !connected) { this.cancel(); if (!["select", "laser", "measure"].includes(this.tool)) this.setTool("select"); }
@@ -522,7 +540,8 @@ export class TableEngine {
     this.cancel();
     this.surfaceColors.clear(); this.textColors.clear();
     this.editingId = null; this.textBefore = null;
-    this.scene = clone(table.scene);
+    const previous = this.scene;
+    this.scene = clone(table.scene); this.keepRoomPlayback(this.scene, previous);
     for (const obj of this.scene.objects) if (obj.text) this.ensureTextFonts(obj.text);
     this.mood = { ...table.mood }; this.grid = { ...table.grid };
     this.obscure = { ...structuredClone(table.obscure), gm: this.roomGM && this.obscure.gm, gmOpacity: this.obscure.gmOpacity ?? .28 };
@@ -531,9 +550,9 @@ export class TableEngine {
     this.cleanSelection(); this.emit(false);
   }
   acknowledgeRoom(table: SharedTable) { this.roomAccepted = structuredClone(table); }
-  replaceRoomArtwork(images: Map<string, string>) {
+  replaceRoomAssets(images: Map<string, string>) {
     const replace = (scene: Scene) => {
-      for (const object of scene.objects) if (object.image && images.has(object.image)) object.image = images.get(object.image)!;
+      for (const object of scene.objects) for (const field of ["image", "video", "audio"] as const) if (object[field] && images.has(object[field]!)) object[field] = images.get(object[field]!)!;
     };
     replace(this.scene);
     if (this.gesture && "before" in this.gesture) replace(this.gesture.before);
@@ -548,7 +567,7 @@ export class TableEngine {
     const previous = this.scene;
     // Keep live brush references and the inline editor intact during unrelated
     // remote edits. Rebase the gesture's rollback scene too, so Escape is safe.
-    const incoming = clone(table.scene);
+    const incoming = clone(table.scene); this.keepRoomPlayback(incoming, previous);
     for (let i = 0; i < incoming.objects.length; i++) {
       const old = previous.objects.find(o => o.id === incoming.objects[i].id);
       if (old && JSON.stringify(old) === JSON.stringify(incoming.objects[i])) incoming.objects[i] = old;
@@ -558,8 +577,10 @@ export class TableEngine {
       if (old && JSON.stringify(old) === JSON.stringify(incoming.strokes[i])) incoming.strokes[i] = old;
     }
     const rebaseBefore = (before: Scene) => {
-      const changes = tableChanges({ ...table, scene: previous }, { ...table, scene: before });
-      return applyChanges(table, changes)?.scene ?? before;
+      const changes = tableChanges({ ...table, scene: this.sharedScene(previous) }, { ...table, scene: this.sharedScene(before) });
+      const result = applyChanges(table, changes, true)?.scene;
+      if (result) this.keepRoomPlayback(result, before);
+      return result ?? before;
     };
     if (this.gesture && "before" in this.gesture) this.gesture.before = rebaseBefore(this.gesture.before);
     if (this.textBefore) this.textBefore = rebaseBefore(this.textBefore);
@@ -664,6 +685,7 @@ export class TableEngine {
       for (const field of ["video", "audio"] as const) {
         const ref = object[field]; if (!ref) continue;
         const blob = this.assets.get(ref);
+        if (!blob && this.roomActive && roomMedia(ref)) continue;
         if (!blob) throw new Error("A media file is unavailable. Replace it before saving this table.");
         if (!used.has(ref)) { used.add(ref); assets.push({ key: ref, blob }); }
         object[field] = `asset:${ref}`;
@@ -748,9 +770,10 @@ export class TableEngine {
       if (this.disposed) return;
       if (this.roomActive) {
         if (!this.roomManageAllowed()) return;
-        const table = parseSharedTable(saved.snapshot);
-        if (!table) { this.notify("This room can import shapes, text, drawings and PNG/JPG/WebP/GIF artwork. Remove video and audio sources from the file first."); return; }
+        const table = parseSharedTable(saved.snapshot, true);
+        if (!table) { this.notify("This room can import artwork, text, drawings and media files. Remove live capture sources first."); return; }
         if ((this.scene.objects.length || this.scene.strokes.length) && !window.confirm("Replace the room table with this file? Everyone in the room will see the imported table.")) return;
+        this.materializeMedia(table.scene.objects, saved.assets);
         this.applyRoom(table); this.emit(); this.notify("Table imported into the room. Your local table is unchanged."); return;
       }
       if ((this.scene.objects.length || this.scene.strokes.length) && !window.confirm("Replace the current table with this file? Export your current table first if you want to keep a separate copy.")) return;
@@ -783,12 +806,12 @@ export class TableEngine {
       .find((o) => (includeLocked || !o.locked) && containsSurface(p, o, worldTransform(this.scene, o)));
   }
   private commit(before: Scene) {
-    if (this.roomActive && (!this.roomEditAllowed() || !editsAllowed({ ...this.getRoomTable(), scene: before }, this.getRoomTable(), this.roomAccess, this.roomIdentity, this.roomGM, this.roomCreating))) {
+    if (this.roomActive && (!this.roomEditAllowed() || !editsAllowed({ ...this.getRoomTable(), scene: this.sharedScene(before) }, this.getRoomTable(), this.roomAccess, this.roomIdentity, this.roomGM, this.roomCreating))) {
       this.scene = before; this.cleanSelection(); this.emit(false); return;
     }
-    if (this.roomActive && !parseSharedTable(this.getRoomTable())) {
+    if (this.roomActive && !parseSharedTable(this.getRoomTable(), true)) {
       this.scene = before; this.cleanSelection(); this.emit(false);
-      this.notify("Rooms currently support shapes, text, drawings and PNG/JPG/WebP/GIF images. Video and audio sharing will follow."); return;
+      this.notify("This source cannot be shared. Use artwork, audio or video files; live streams will follow."); return;
     }
     if (!this.roomActive && JSON.stringify(before) !== JSON.stringify(this.scene)) {
       this.undoStack.push(before);
@@ -1100,7 +1123,7 @@ export class TableEngine {
     if (issue) { this.notify(`${obj.filename ?? obj.name}: ${issue}. Remove this object and try another file.`); return; }
     const before = clone(this.scene);
     obj.paused = !obj.paused;
-    this.commit(before);
+    if (this.roomActive && (obj.audio || obj.video)) this.emit(false); else this.commit(before);
   }
   setFileAudio(id: string, patch: { volume?: number; loop?: boolean }) {
     const obj = this.scene.objects.find(o => o.id === id && o.kind === "audio");
@@ -1108,14 +1131,14 @@ export class TableEngine {
     const before = clone(this.scene);
     if (patch.volume !== undefined) obj.volume = Math.max(0, Math.min(1, patch.volume));
     if (patch.loop !== undefined) obj.loop = patch.loop;
-    this.commit(before);
+    if (this.roomActive) this.emit(false); else this.commit(before);
   }
   restartAudio(id: string) {
     const obj = this.scene.objects.find(o => o.id === id && o.kind === "audio");
     if (!obj) return;
     const before = clone(this.scene), entry = this.renderer.audios.get(id);
     if (entry) entry.audio.currentTime = 0;
-    obj.paused = false; this.commit(before);
+    obj.paused = false; if (this.roomActive) this.emit(false); else this.commit(before);
   }
   stopAllAudio() {
     this.audio.clear();
@@ -1124,7 +1147,7 @@ export class TableEngine {
       obj.paused = true;
       const entry = this.renderer.audios.get(obj.id); if (entry) entry.audio.currentTime = 0;
     }
-    this.commit(before);
+    if (this.roomActive) this.emit(false); else this.commit(before);
   }
   findUnavailableMedia() {
     const failed = this.renderer.failedMedia(this.scene);
@@ -1342,16 +1365,19 @@ export class TableEngine {
   }
   async addFiles(files: File[], p?: Point, maskSelection = false) {
     if (!this.roomEditAllowed()) return;
+    const importingRoom = this.roomActive ? this.roomId : null;
     if (this.roomActive) {
-      if (files.some(f => !/^image\/(png|jpeg|webp|gif)$/.test(f.type))) this.notify("Online rooms currently accept PNG, JPG, WebP and GIF images. Video and audio sharing will follow.");
-      files = files.filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type));
-      if (files.reduce((n, f) => n + f.size, 0) > 5 * 1024 * 1024) { this.notify("Choose images under 5 MB total for this room playtest."); return; }
+      if (files.some(f => f.size > (/^image\//.test(f.type) ? 20 * 1024 * 1024 : roomMediaLimit))) { this.notify("Room images can be up to 20 MB; audio/video files up to 64 MB each."); return; }
+      const supported = (f: File) => /^image\/(png|jpeg|webp|gif)$/.test(f.type) || /^(video|audio)\//.test(f.type) || /\.(mp4|webm|mp3|wav|m4a|ogg|oga|opus|aac|flac)$/i.test(f.name);
+      if (files.some(f => !supported(f))) this.notify("Use PNG, JPG, WebP, GIF, MP4, WebM, MP3, WAV, Ogg, FLAC or AAC files in a room.");
+      files = files.filter(supported);
     }
     const images = files.filter((f) => f.type.startsWith("image/"));
     if (images.length) await this.addImages(images, p, maskSelection);
     for (const [index, file] of files.filter(
       (f) => /^(video|audio)\//.test(f.type) || /\.(mp4|webm|mp3|wav|m4a|ogg|oga|opus|aac|flac)$/i.test(f.name),
     ).entries()) {
+      if (!this.creationAllowed()) return;
       const url = URL.createObjectURL(file),
         video = document.createElement("video");
       this.urls.add(url);
@@ -1362,7 +1388,8 @@ export class TableEngine {
       video.src = url;
       try {
         const kind = await waitForMediaData(video);
-        if (this.disposed) return;
+        if (this.disposed || (this.roomActive ? this.roomId : null) !== importingRoom) throw new Error("Import cancelled because the table changed.");
+        if (!this.creationAllowed()) throw new Error("Adding this file is no longer allowed.");
         const before = clone(this.scene);
         const obj = createSurface(
           kind,
@@ -2233,7 +2260,7 @@ export class TableEngine {
         const content = JSON.parse(data.slice(prefix[0].length)) as Surface[];
         if (!validClipboard(content)) throw new Error("Invalid clipboard");
         e.preventDefault();
-        if (content.some(o => roomImage(o.image))) void this.pasteRoomArtwork(content);
+        if (content.some(o => roomImage(o.image) || roomMedia(o.video) || roomMedia(o.audio))) void this.pasteRoomArtwork(content);
         else { this.placeCopies(content); this.notify("Copied surfaces placed, with everything resting on them."); }
       } catch {
         this.notify("Could not read these copied surfaces.");
@@ -2243,14 +2270,32 @@ export class TableEngine {
   private async pasteRoomArtwork(content: Surface[]) {
     const active = this.roomActive, room = this.roomId;
     try {
-      if (active && content.every(o => !roomImage(o.image) || roomImage(o.image)!.room === room)) {
+      if (active && content.every(o => [roomImage(o.image), roomMedia(o.video), roomMedia(o.audio)].every(ref => !ref || ref.room === room))) {
         this.placeCopies(content); this.notify("Copied surfaces placed, with everything resting on them."); return;
       }
       // Materialize private URLs when copying between rooms or into a local table.
-      const objects = await inlineRoomArtwork(content);
+      const media = await inlineRoomMedia(await inlineRoomArtwork(content)), objects = media.objects;
       if (this.disposed || active !== this.roomActive || room !== this.roomId) return;
+      this.materializeMedia(objects, media.assets);
       this.placeCopies(objects); this.notify("Copied surfaces placed, with everything resting on them.");
     } catch (error) { this.notify(error instanceof Error ? error.message : "Could not copy this room artwork."); }
+  }
+  private materializeMedia(objects: Surface[], assets: StoredTable["assets"]) {
+    const sources = new Map<string, string>();
+    for (const { key, blob } of assets) {
+      const url = URL.createObjectURL(blob); this.urls.add(url); this.assets.set(url, blob); sources.set(key, url);
+    }
+    for (const obj of objects) for (const field of ["video", "audio"] as const) if (obj[field]?.startsWith("asset:")) obj[field] = sources.get(obj[field]!.slice(6))!;
+  }
+  storedRoomTable(table: SharedTable): StoredTable {
+    const snapshot = sharedSnapshot(structuredClone(table)), assets: StoredTable["assets"] = [], used = new Set<string>();
+    for (const obj of snapshot.scene.objects) for (const field of ["video", "audio"] as const) if (obj[field]?.startsWith("blob:")) {
+      const ref = obj[field]!, blob = this.assets.get(ref);
+      if (!blob) throw new Error("An unsent media file is unavailable.");
+      if (!used.has(ref)) { used.add(ref); assets.push({ key: ref, blob }); }
+      obj[field] = `asset:${ref}`;
+    }
+    return { snapshot, assets };
   }
   private copy = (e: ClipboardEvent) => {
     if (editing(e.target) || this.editingId || !this.selection.size) return;
@@ -2398,10 +2443,10 @@ function validClipboard(value: unknown): value is Surface[] {
       return false;
     if (
       o.video &&
-      (typeof o.video !== "string" || !o.video.startsWith("blob:"))
+      (typeof o.video !== "string" || !o.video.startsWith("blob:") && !roomMedia(o.video))
     )
       return false;
-    if (o.audio && (typeof o.audio !== "string" || !o.audio.startsWith("blob:"))) return false;
+    if (o.audio && (typeof o.audio !== "string" || !o.audio.startsWith("blob:") && !roomMedia(o.audio))) return false;
     if (o.volume !== undefined && (!finite(o.volume) || o.volume < 0 || o.volume > 1)) return false;
     if (o.loop !== undefined && typeof o.loop !== "boolean") return false;
     for (const s of o.strokes) {

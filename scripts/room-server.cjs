@@ -21,6 +21,7 @@ fs.mkdirSync(data, { recursive: true });
 class HttpError extends Error { constructor(status, message, code) { super(message); this.status = status; this.code = code; } }
 const fail = (status, message, code) => { throw new HttpError(status, message, code); };
 const artwork = require("./room-assets.cjs").createAssets(data, fail);
+const mediaFiles = require("./room-media.cjs").createMedia(data, fail);
 const json = (res, status, value) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); res.end(JSON.stringify(value)); };
 function body(req) {
   return new Promise((resolve, reject) => {
@@ -110,6 +111,7 @@ function historyStatus(room, actor) {
 }
 function authorizedTable(room, me, table, changes = tableChanges(room.table, table), restoring = false) {
   artwork.validate(room.id, table, room.table, restoring);
+  mediaFiles.validate(room.id, table);
   if (!editsAllowed(room.table, table, room.access, me.id, me.role === "gm", room.playerEditing)) fail(403, "This edit needs ownership or sharing permission. Locked placement and GM settings are protected.");
   if (me.role !== "gm" && changes.some(c => /^(object|stroke):/.test(c.key) && room.access[c.key] && !canEdit(room.access, c.key, me.id))) fail(403, "Only the owner or a shared editor can change this object's stacking order.");
 }
@@ -154,6 +156,18 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/")) {
       if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) fail(403, "Use this server's own room link.");
       if (req.headers["sec-fetch-site"] === "cross-site") fail(403, "Cross-site room requests are not allowed.");
+      const mediaRoute = url.pathname.match(/^\/api\/rooms\/([a-f0-9]{16})\/media(?:\/([a-f0-9]{64}\.(mp4|webm|mp3|wav|ogg|flac|aac)))?$/);
+      if (mediaRoute) {
+        const room = load(mediaRoute[1]), me = member(req, room);
+        if (mediaRoute[2] && ["GET", "HEAD"].includes(req.method)) return mediaFiles.serve(room.id, mediaRoute[2], req, res);
+        if (!mediaRoute[2] && req.method === "POST") {
+          if (me.role !== "gm" && !room.playerEditing && !room.table.scene.objects.some(o => canEdit(room.access, `object:${o.id}`, me.id, false))) fail(403, "The GM must allow adding objects or share an editable object before you can upload media.");
+          rate(req, `media:${room.id}:${me.id}`, 30);
+          const media = await mediaFiles.upload(room.id, req); member(req, room);
+          return json(res, 200, { media });
+        }
+        fail(405, "Method not allowed.");
+      }
       const assetRoute = url.pathname.match(/^\/api\/rooms\/([a-f0-9]{16})\/assets(?:\/([a-f0-9]{64}\.(png|jpg|webp|gif)))?$/);
       if (assetRoute) {
         const room = load(assetRoute[1]), me = member(req, room);
@@ -397,7 +411,7 @@ const server = http.createServer(async (req, res) => {
       if (action === "table") {
         if (v.revision !== room.revision) return json(res, 409, { error: "The table changed in another window. The latest room version has been loaded; try your edit again.", state: state(room, me) });
         const table = parseSharedTable(v.table);
-        if (!table) fail(400, "Invalid table. Rooms currently support shapes, text, drawings and PNG/JPG/WebP/GIF images (8 MB total). Media streams and files stay local.");
+        if (!table) fail(400, "Invalid table. Upload images, audio and video before referencing them. Live sources cannot be shared yet.");
         authorizedTable(room, me, table);
         const changes = tableChanges(room.table, table), revision = room.revision + 1;
         if (me.role !== "gm" && !room.playerEditing && !changes.length) fail(403, "Player creation is disabled.");

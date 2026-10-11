@@ -9,9 +9,10 @@ export type { Presence } from "./room-presence.ts";
 import { locksAllowed, validAccess, type AccessMap, type DragLease } from "./room-permissions.ts";
 import { emptyRoomDice, parseRoomDice, validRollReceipts, type RoomDice, type RollReceipt } from "./room-dice.ts";
 import { roomImage } from "./room-artwork.ts";
+import { roomMedia } from "./room-media.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 7;
+export const ROOM_PROTOCOL = 8;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean; profileVersion?: number };
 export const validParticipant = (p: any): p is Participant => p && typeof p.id === "string" && typeof p.name === "string" && /^#[0-9a-f]{6}$/i.test(p.color) && ["gm", "player"].includes(p.role) && typeof p.online === "boolean" &&
   (p.profileVersion === undefined || Number.isSafeInteger(p.profileVersion) && p.profileVersion >= 0);
@@ -60,15 +61,19 @@ export function sharedSnapshot(table: SharedTable): TableSnapshot {
     pen: { color: "#b66b45", thickness: 3, smoothing: .55, transforms: true },
   };
 }
-export function parseSharedTable(value: unknown): SharedTable | null {
+export function parseSharedTable(value: unknown, allowLocalMedia = false): SharedTable | null {
   if (!value || typeof value !== "object") return null;
   const table = value as SharedTable;
   if (!table.scene || !Array.isArray(table.scene.objects) || table.scene.objects.length > 1000) return null;
-  // Static artwork only in this first room transport. Never transmit local blob
-  // addresses, capture IDs, or arbitrary external URLs to another participant.
-  if (table.scene.objects.some(o => !o || typeof o !== "object" || ["camera", "screen", "video", "audio"].includes(o.kind) || o.video || o.audio || o.sourceId ||
+  // Local uploads are accepted only for client-side rebasing. The API boundary
+  // always requires private room references, never blobs or external URLs.
+  const mediaRef = (ref: unknown) => !!roomMedia(ref) || allowLocalMedia && typeof ref === "string" && /^(blob:|asset:)/.test(ref);
+  if (table.scene.objects.some(o => !o || typeof o !== "object" || ["camera", "screen"].includes(o.kind) || o.sourceId ||
+    (o.video !== undefined && (o.kind !== "video" || o.audio !== undefined || !mediaRef(o.video))) ||
+    (o.audio !== undefined && (o.kind !== "audio" || o.video !== undefined || !mediaRef(o.audio))) ||
+    (o.kind === "video" && !o.video || o.kind === "audio" && !o.audio) ||
     (o.image && !roomImage(o.image) && !/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(o.image)))) return null;
-  const snapshot = parseSnapshot(sharedSnapshot(table), true);
+  const snapshot = parseSnapshot(sharedSnapshot(table), true, allowLocalMedia);
   if (!snapshot) return null;
   if (new Set(snapshot.scene.strokes.map(s => s.id)).size !== snapshot.scene.strokes.length) return null;
   return { scene: snapshot.scene, mood: snapshot.mood, grid: snapshot.grid,

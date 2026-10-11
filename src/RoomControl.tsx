@@ -65,7 +65,7 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
       {error && <p className="room-error" role="alert">{error}</p>}
       {notice && <p className="widget-note" role="status">{notice}</p>}
       {client.current?.rejectedDraft && <button className="widget-primary" onClick={() => void act(async () => { await client.current!.exportRejected(); })}>Export unsent edit</button>}
-      {status === "removed" && client.current?.rejectedDraft && <p className="widget-note">Room images can no longer be downloaded. If your edit uses them, export preserves the edits and image references as recovery data.</p>}
+      {status === "removed" && client.current?.rejectedDraft && <p className="widget-note">Room images and media can no longer be downloaded. If your edit uses them, export preserves the edits and file references as recovery data.</p>}
       {!room ? <>
         <label>Your name<input aria-label="Your player name" maxLength={32} value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} /></label>
         <ColorControl label="Presence color" value={profile.color} onChange={color => setProfile({ ...profile, color })} />
@@ -118,7 +118,7 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
           <label>Player invitation<input aria-label="Player invitation" readOnly value={inviteLink} onFocus={e => e.target.select()} /></label>
           <div className="room-actions"><button className="widget-primary" disabled={busy} onClick={() => void act(async () => { await navigator.clipboard.writeText(inviteLink); setNotice("Invitation copied."); })}>Copy invitation</button><button disabled={!canManage} onClick={() => { setError(""); setNotice(""); setConfirmation({ kind: "invitation", invite: room.invite! }); }}>Replace invitation</button></div>
         </> : status !== "removed" && <p className="widget-note">You can edit your own and shared objects.{room.playerEditing ? " You can also add objects and draw on the canvas." : " Ask the GM to enable adding objects."}</p>}
-        {status !== "removed" && <p className="widget-note">Objects and dice rolls are shared. Undo reverses your own object edits. Pan, zoom, rulers, dice selections and presets are personal. The GM controls mood, grid and cover.</p>}
+        {status !== "removed" && <p className="widget-note">Objects, files and dice rolls are shared. File playback and volume are personal. Undo reverses your own object edits. The GM controls mood, grid and cover.</p>}
         {status === "offline" && <button className="widget-primary" disabled={busy} onClick={() => void act(async () => {
           await client.current!.reconnect();
         })}>Rejoin room</button>}

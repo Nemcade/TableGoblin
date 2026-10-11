@@ -81,7 +81,7 @@ export function validOperation(value: unknown): value is RoomOperation {
     new Set(v.changes.map(c => c.key)).size === v.changes.length && Array.isArray(v.expected) && v.expected.length <= 54003 &&
     v.expected.every(e => e && key(e.key) && Number.isSafeInteger(e.version) && e.version >= 0) && new Set(v.expected.map(e => e.key)).size === v.expected.length;
 }
-export function applyChanges(table: SharedTable, changes: Change[]): SharedTable | null {
+export function applyChanges(table: SharedTable, changes: Change[], allowLocalMedia = false): SharedTable | null {
   const next = structuredClone(table);
   for (const c of changes) {
     if (c.key.startsWith("object:") || c.key.startsWith("stroke:")) {
@@ -105,7 +105,7 @@ export function applyChanges(table: SharedTable, changes: Change[]): SharedTable
   }
   // Free drawing IDs must also be unique to make commands unambiguous.
   if (new Set(next.scene.strokes.map(s => s.id)).size !== next.scene.strokes.length) return null;
-  return parseSharedTable(next);
+  return parseSharedTable(next, allowLocalMedia);
 }
 export function advanceVersions(before: SharedTable, after: SharedTable, changes: Change[], versions: Versions, revision: number): Versions {
   const next = { ...versions };

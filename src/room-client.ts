@@ -1,5 +1,5 @@
 import type { TableEngine } from "./engine";
-import { ROOM_PROTOCOL, readRoomState, sharedSnapshot, validParticipant, validPresence, type RoomState, type SharedTable } from "./room-state";
+import { ROOM_PROTOCOL, readRoomState, validParticipant, validPresence, type RoomState, type SharedTable } from "./room-state";
 import { recoveryFile, tableFile } from "./table-storage";
 import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation, type Change } from "./room-operations";
 import { editsAllowed, hierarchy, type ObjectAccess, type DragLease } from "./room-permissions";
@@ -7,6 +7,7 @@ import { parseRoomDice, validRollReceipts, type RollRequest } from "./room-dice"
 import type { DiceSetup } from "./dice-types";
 import type { RollArea } from "./dice-throw";
 import { roomImage, roomImageLimit } from "./room-artwork";
+import { roomMedia, roomMediaLimit, roomMediaTypes } from "./room-media";
 class ArtworkRejected extends Error {}
 export type RoomStatus = "connected" | "saving" | "offline" | "update-required" | "removed";
 class RoomRequestError extends Error {
@@ -179,10 +180,10 @@ export class RoomClient {
     }
     const changes = tableChanges(base, this.engine.getRoomTable());
     const operation = { id: "local-rebase-only", changes, expected: expectations(base, changes, versions) };
-    const local = applyChanges(next.table, changes);
+    const local = applyChanges(next.table, changes, true);
     const permitted = !!local && editsAllowed(next.table, local, next.access, next.me.id, next.me.role === "gm", next.playerEditing);
     const conflict = changes.length > 0 && (!permitted || operationConflict(next.table, operation, next.versions));
-    const merged = conflict ? null : applyChanges(next.table, changes);
+    const merged = conflict ? null : applyChanges(next.table, changes, true);
     if (conflict || !merged) {
       this.keepDraft("An object or its group changed before your edit arrived. Your unsent version can be exported; the latest room version is open.");
       this.engine.applyRoom(next.table);
@@ -225,8 +226,10 @@ export class RoomClient {
     try {
       if (!this.flight) {
         const images = await this.uploadArtwork(changes);
+        const media = await this.uploadMedia(changes);
+        for (const [ref, url] of media) images.set(ref, url);
         if (this.inactive) return;
-        this.engine.replaceRoomArtwork(images);
+        this.engine.replaceRoomAssets(images);
         if (!this.connected || this.engine.gesture || this.engine.editingId || this.leasePending) { this.pending = true; return; }
         // A remote edit may have arrived while the image was uploading. Build
         // the operation against the rebased table, never the pre-upload snapshot.
@@ -286,6 +289,37 @@ export class RoomClient {
   }
   private updateStatus() {
     this.update(this.state, this.removed ? "removed" : !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight || this.management || this.profile ? "saving" : "connected");
+  }
+  private async uploadMedia(changes: Change[]) {
+    const refs = new Set(changes.filter(c => c.key.startsWith("object:")).flatMap(c => {
+      const object = c.value as import("./model").Surface | null;
+      return [object?.video, object?.audio].filter((ref): ref is string => !!ref?.startsWith("blob:"));
+    })), replacements = new Map<string, string>();
+    for (const ref of refs) {
+      if (this.inactive) break;
+      const blob = this.engine.roomMediaBlob(ref);
+      if (!blob) throw new ArtworkRejected("This media file is unavailable. Export the unsent table or try another file.");
+      if (blob.size > roomMediaLimit) throw new ArtworkRejected("This media exceeds the 64 MB room file limit. Your unsent table can be exported.");
+      const aliases: Record<string, string> = { "audio/x-wav": "audio/wav", "audio/wave": "audio/wav", "audio/mp3": "audio/mpeg", "audio/x-flac": "audio/flac", "audio/x-m4a": "audio/mp4" };
+      const type = aliases[blob.type] ?? blob.type;
+      if (!roomMediaTypes.includes(type)) throw new ArtworkRejected("Use MP4, WebM, MP3, WAV, Ogg, FLAC or AAC media. Your unsent table can be exported.");
+      const digest = "media:" + Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())), n => n.toString(16).padStart(2, "0")).join("");
+      let url = this.uploadedArtwork.get(digest);
+      if (!url) {
+        if (this.inactive) break;
+        const response = await fetch(`/api/rooms/${this.state.id}/media`, { method: "POST", headers: { "Content-Type": type }, body: blob, signal: AbortSignal.timeout(60000) });
+        const result = await response.json();
+        if (this.checkRemoved(result)) throw new RoomRequestError(result.error, result.code);
+        if (!response.ok) {
+          if (response.status < 500 && response.status !== 429) throw new ArtworkRejected((result.error || "The media was rejected.") + " Your unsent table can be exported.");
+          throw new Error(result.error || "Media upload interrupted.");
+        }
+        if (roomMedia(result.media)?.room !== this.state.id) throw new Error("Invalid media response.");
+        url = result.media as string; this.uploadedArtwork.set(digest, url);
+      }
+      replacements.set(ref, url);
+    }
+    return replacements;
   }
   private receiveDice(value: unknown) {
     if (this.inactive || this.state.protocol !== ROOM_PROTOCOL) return;
@@ -448,7 +482,7 @@ export class RoomClient {
         if (this.inactive) return;
         if (this.engine.gesture === gesture) this.engine.abortRoomDrag();
         const remaining = tableChanges(this.state.table, this.engine.getRoomTable()).filter(c => !scope.includes(c.key.slice(7)));
-        this.engine.mergeRoom(applyChanges(this.state.table, remaining) ?? this.state.table);
+        this.engine.mergeRoom(applyChanges(this.state.table, remaining, true) ?? this.state.table);
         this.engine.roomNotice(error instanceof Error ? error.message : "This object could not be grabbed.");
       }
     }).finally(() => { this.leasePending--; if (!this.inactive) { if (this.pending) this.schedule(); void this.releaseIdleDrag(); } });
@@ -462,7 +496,7 @@ export class RoomClient {
   requestSave() { this.schedule(); }
   async exportRejected() {
     if (!this.rejectedDraft) return;
-    const stored = { snapshot: sharedSnapshot(this.rejectedDraft), assets: [] }, recovery = this.removed && this.rejectedDraft.scene.objects.some(o => roomImage(o.image));
+    const stored = this.engine.storedRoomTable(this.rejectedDraft), recovery = this.removed && this.rejectedDraft.scene.objects.some(o => roomImage(o.image) || roomMedia(o.video) || roomMedia(o.audio));
     const file = recovery ? await recoveryFile(stored) : await tableFile(stored);
     const url = URL.createObjectURL(new Blob([file], { type: "application/json" }));
     const a = document.createElement("a"); a.href = url; a.download = recovery ? "Table Goblin unsent room edit.recovery.json" : "Table Goblin unsent room edit.goblin.json"; a.click();

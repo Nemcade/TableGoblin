@@ -79,6 +79,7 @@ export function ObjectActions({ engine, selection, point, colors, onClose }: {
     {editable && single?.kind === "text" && !single.locked && <TextObjectSettings engine={engine} object={single} />}
     {single && (single.image || single.video) && <button disabled={single.locked || !editable} title={single.locked ? "Unlock to edit" : undefined} onClick={() => { onClose(); engine.edit(single.id); }}>{isShape(single) ? "Edit art" : "Crop"}</button>}
     {single && (single.video || single.audio || single.animated) && <button onClick={() => engine.togglePlayback(single.id)}>{single.paused ? (single.audio ? "Play audio" : "Play media") : (single.audio ? "Pause audio" : "Pause media")}</button>}
+    {single && engine.roomActive && (single.video || single.audio) && <p className="widget-note">Playback and volume affect your own view.</p>}
     {single?.audio && <>
       <button onClick={() => engine.restartAudio(single.id)}>Restart audio</button>
       <label className="audio-file-volume">Volume <input aria-label="Audio file volume" type="range" min="0" max="100" value={(single.volume ?? .65) * 100} onChange={e => engine.setFileAudio(single.id, { volume: Number(e.target.value) / 100 })} /><small>{Math.round((single.volume ?? .65) * 100)}%</small></label>

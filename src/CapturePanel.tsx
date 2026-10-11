@@ -340,16 +340,17 @@ export function AudioPanel({
             ×
           </button>
         </div>
+        {engine.roomActive && <p className="widget-note">Room audio files are shared. Playback, loop and volume are personal.</p>}
         <button className="audio-display" onClick={() => audioFiles.current?.click()}>＋ Audio file <span>Music, ambience, sound effects, or an audio-only MP4</span></button>
         <input ref={audioFiles} type="file" aria-label="Import audio files" accept="audio/*,.mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.webm" multiple hidden onChange={e => { void engine.addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
         {fileSources.length > 0 && <div className="audio-sources" role="region" aria-label="Audio files">
           {fileSources.map(file => {
-            const name = file.filename ?? file.name, issue = engine.getMediaIssue(file);
+            const name = file.filename ?? file.name, issue = engine.getMediaIssue(file), editable = engine.objectEditable(file.id, true);
             return <article className="audio-source" key={file.id}>
               <div className="audio-source-heading">
                 <button className="audio-file-name" aria-label={`Locate ${name}`} onClick={() => { engine.locate(file.id); onClose(); }}><strong>{name}</strong><small>{issue ?? "Audio file · locate on table"}</small></button>
                 <button disabled={!!issue} aria-label={`${file.paused ? "Play" : "Pause"} ${name}`} onClick={() => engine.togglePlayback(file.id)}>{file.paused ? "Play" : "Pause"}</button>
-                <button disabled={file.locked} aria-label={`Remove ${name}`} title={file.locked ? "Unlock the object to remove" : "Remove audio file"} onClick={() => engine.delete(new Set([file.id]))}>Remove</button>
+                <button disabled={file.locked || !editable} aria-label={`Remove ${name}`} title={file.locked ? "Unlock the object to remove" : !editable ? "Object editing permission is required" : "Remove audio file"} onClick={() => engine.delete(new Set([file.id]))}>Remove</button>
               </div>
               <div className="audio-source-controls audio-file-controls">
                 <button disabled={!!issue} onClick={() => engine.restartAudio(file.id)}>Restart</button>

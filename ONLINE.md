@@ -2,6 +2,8 @@
 
 `main` preserves the local application. `feature/online-rooms` adds a room server and the **Online** control in the header.
 
+See [ROADMAP.md](ROADMAP.md) for completed milestones and the remaining work toward a full feature demo.
+
 ## Open locally
 
 With Node.js 22.12+ installed:
@@ -16,7 +18,7 @@ Or double-click **Open Online Table Goblin.bat** after the build. It opens `http
 
 After updating the app, close the existing online server window (or press Ctrl+C there), reopen the online launcher, and refresh both the GM and player browsers. Refreshing only the browser can load a new app against an older server process. The launcher checks the running server before opening a browser; an outdated process gets a restart explanation instead of silently being reused. Saved rooms and browser identities survive this restart. With an older server, the new app can still display the table in read-only mode and shows **Restart room server**.
 
-Open **Online**, enter a name and pointer color, and create a room. Copy the player invitation into another browser or an independent browser profile. Names are labels; matching names do not grant another participant's identity. A room starts empty. **Table options → Import table** lets the GM import a saved table containing supported artwork. Leaving the room restores the local table that was open before joining. Room state is never saved over the local IndexedDB record.
+Open **Online**, enter a name and pointer color, and create a room. Copy the player invitation into another browser or an independent browser profile. Names are labels; matching names do not grant another participant's identity. A room starts empty. **Table options → Import table** lets the GM import a saved table containing artwork and supported media files. Leaving the room restores the local table that was open before joining. Room state is never saved over the local IndexedDB record.
 
 Browser identities and GM credentials use persistent, HttpOnly cookies scoped to each room. The GM should keep their browser profile; losing its cookies loses GM access in this prototype. Invitation links grant player access, never GM access. Opening a room URL after refresh restores the same identity. Clearing the address fragment returns to the normal entry page on the next reload; the room remains on the server.
 
@@ -35,12 +37,27 @@ Both controls are checked by the server and persisted atomically. Recent retries
 ## What is shared
 
 - Shapes, text, raster images (PNG/JPG/WebP/GIF), artwork masks, nesting, object transforms, drawings, deletion, and locks.
+- Uploaded audio/video file objects and their crops. Playback, loop and volume are personal in this stage.
 - GM mood, grid and visual Obscure edits. GM cover opacity stays local to the GM's view.
 - Colored selection outlines and laser points with participant names. Presence is transient; stale laser points expire and disconnected participants' selections disappear.
 - Durable room contents, roles, identities and object ownership/sharing. Server restart preserves them.
 - Dice throws, their color groups, participant names, and the last 12 results. Everyone sees the same physical throw in world coordinates.
 
 Pan/zoom, current selection, pen preferences, rulers, preset libraries, dice selection/colors and sound preferences remain personal. Live audio/video transport is a subsequent stage. The Obscure cover remains a visual mask; room members receive the underlying content.
+
+## Room audio and video files
+
+Drop an MP4, WebM, MP3, WAV, Ogg, FLAC or AAC file, or use **Add → Audio file** / the existing audio panel. The browser checks for a decodable track before creating an object. An audio-only MP4 becomes a visible audio tile, including files sent by a phone. Video appears as a muted loop. Supported codecs depend on the browser. A corrupt drop is rejected without creating an invisible object; a stored file that cannot be decoded or downloaded appears as a removable placeholder and is listed by **Find unavailable media**.
+
+Files upload to private room storage before the object is saved. Each file is limited to 64 MB, with at most 512 MB and 512 distinct files per room. Two media uploads can run at once. These limits are separate from the artwork limits. Matching bytes reuse one stored file; object moves and copies send only references. Wait for **Room connected** after importing media. Interrupted uploads retry; permanently rejected uploads retain **Export unsent edit**, including the pending file bytes.
+
+Everyone in the room can load the files and use their personal Play/Pause, Restart, Loop and Volume controls. These controls affect only that browser and do not change room objects, permissions or undo history. Audio starts paused; video loops muted. Personal playback survives unrelated table updates and resets on refresh. Shared start/pause/seek timing and late-join playhead alignment are the next media milestone.
+
+The same object ownership rules apply to moving, cropping, nesting, deleting and copying media. Video crops remain shared and preserve the source aspect ratio. A copied audio tile starts paused and reuses the source file. Portable room exports embed file bytes; copying into a local table or another room downloads the bytes before placement. Importing a portable table into a room uploads its media before saving its objects. Keep access to the source room while copying or exporting.
+
+Media downloads require room authentication, including byte-range seeking, HEAD and conditional-cache requests. Removed sessions cannot fetch more file data. Already downloaded or buffered bytes cannot be recalled from a browser. The server checks container structure and declared types; each browser performs codec decoding. A rejected or unavailable file can be deleted by an authorized object editor.
+
+Files live under `room-data/media/<room-id>/` and survive server restarts. Files remain after deleting an object so undo and recovery still work; unused-file cleanup is a later task. Back up the entire room-data directory. After removal, **Export unsent edit** preserves edits, pending local media bytes and private file references as recovery data; it cannot fetch inaccessible room files.
 
 ## Identity and finding each other
 
@@ -114,3 +131,5 @@ npm run test:browser
 Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Room controls cover confirmation/cancel, invitation rotation, duplicate names, synchronized GM tabs, transferred ownership, cleared grants, revoked connections and artwork reads, requests/uploads/dice already in progress, unsent-edit recovery, retries and restart persistence. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI. Artwork checks cover large maps, authenticated caching, format/size/foreign-reference rejection, upload races/retries, GIF animation, masked/nested copies, portable export/import, compact operations and backed-up migration.
 
 Identity and navigation checks cover self-only profile updates, durable profile versions, stale tabs, unchanged ownership/entity versions, live labels/colors, reconnect retries, unfinished typing/gestures, different viewport aspect ratios, independent cameras and local camera restoration.
+
+File-media checks cover private uploads, format/truncation rejection, byte-range playback, ownership, removed sessions and interrupted uploads, real WAV/audio-only MP4/WebM/MP4 decoding, personal playback through remote edits, crop/copy behavior, refresh/restart, compact commands and portable/recovery exports.
