@@ -2,7 +2,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { createHmac } = require('node:crypto');
 const { createIce } = require('../scripts/room-ice.cjs');
 const { setup, settings } = require('../deploy/setup.cjs');
@@ -39,6 +40,17 @@ test('static ICE settings remain supported; broken relay settings fail without l
   for (const env of invalid) {
     assert.throws(() => createIce(env), e => { assert(!e.message.includes(secret)); return true; });
   }
+});
+
+test('home playtest discovery is opt-in and custom ICE/relay configuration takes precedence', () => {
+  assert.equal(createIce({}).profile, 'local');
+  const direct = createIce({ TABLE_GOBLIN_INTERNET_PLAYTEST: '1' });
+  assert.equal(direct.profile, 'direct');
+  assert.deepEqual(direct().iceServers, [{ urls: 'stun:stun.l.google.com:19302' }]);
+  const disabled = createIce({ TABLE_GOBLIN_INTERNET_PLAYTEST: '1', TABLE_GOBLIN_ICE_SERVERS: '[]' });
+  assert.equal(disabled.profile, 'local'); assert.deepEqual(disabled().iceServers, []);
+  const relay = createIce({ TABLE_GOBLIN_INTERNET_PLAYTEST: '1', TABLE_GOBLIN_TURN_SECRET: secret, TABLE_GOBLIN_TURN_URLS: JSON.stringify(urls) });
+  assert.equal(relay.profile, 'relay'); assert.equal(relay({ id: 'room' }, { id: 'member' }).iceServers.length, 1);
 });
 
 test('deployment setup supports public/private mapping and preserves existing configuration', t => {
@@ -82,6 +94,12 @@ test('production API exposes credentials only to room members, keeps them off di
     });
   }
   let base = await start();
+  const launchEnv = { ...process.env, PORT: new URL(base).port, TABLE_GOBLIN_NO_OPEN: '1', TABLE_GOBLIN_TURN_SECRET: '', TABLE_GOBLIN_TURN_URLS: '', TABLE_GOBLIN_ICE_SERVERS: '', TABLE_GOBLIN_INTERNET_PLAYTEST: '1' };
+  await assert.rejects(promisify(execFile)(process.execPath, ['scripts/launch-online.cjs'], { env: launchEnv, windowsHide: true }),
+    error => { assert.match(error.stderr, /different live-media settings/); return true; });
+  const reuse = await promisify(execFile)(process.execPath, ['scripts/launch-online.cjs'], { windowsHide: true,
+    env: { ...launchEnv, TABLE_GOBLIN_TURN_SECRET: secret, TABLE_GOBLIN_TURN_URLS: JSON.stringify(urls) } });
+  assert.match(reuse.stdout, /already running/);
   async function api(endpoint, cookie, payload) {
     const r = await fetch(base + endpoint, { headers: { ...(cookie ? { Cookie: cookie } : {}),
       ...(payload ? { 'Content-Type': 'application/json' } : {}) }, ...(payload ? { method: 'POST', body: JSON.stringify(payload) } : {}) });

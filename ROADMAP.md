@@ -1,6 +1,6 @@
 # Table Goblin demo roadmap
 
-The local tabletop demo and the core shared-room demo work. Live media now works in local multi-browser tests; the remaining work is hosting and testing on real internet connections. A full feature demo means the existing tabletop tools, file media and live sources can be used together by a small invited group; it does not require accounts, game rules or public room discovery.
+The local tabletop demo and the core shared-room demo work. The first real internet test through Tailscale Funnel confirmed shared objects, images, permissions and dice. Live media works in local multi-browser tests but still needs a successful cross-network check. A full feature demo means the existing tabletop tools, file media and live sources can be used together by a small invited group; it does not require accounts, game rules or public room discovery.
 
 ## Completed
 
@@ -11,14 +11,15 @@ The local tabletop demo and the core shared-room demo work. Live media now works
 - Shared file playback: authorized play/pause/restart/seek/loop, independent playback versions and retry receipts, room playhead recovery, late joins, personal mute/volume and explicit sound permission.
 - Live sources: authenticated directed WebRTC signaling for cameras/OBS, screens and captured audio, shared surface copies/crops, source replacement/reconnect, late joins, personal listening, ownership checks, revocation and connection cleanup. Verified in independent local browser contexts; public network/relay testing remains.
 - Portable deployment preparation: Linux Docker Compose stack, HTTPS proxy, persistent volumes, coturn with expiring member credentials, private configuration generator, backup/recovery instructions and isolated credential/API checks. Container startup and public networking remain to be verified on the target host.
+- First home-hosted internet playtest: shared objects/images, permissions and dice worked through Funnel. Remote OGG stuttering led to a stable playback clock and gentle drift correction, verified with real OGG and delayed updates. An opt-in Windows launcher now enables free STUN discovery; cross-network live media remains unverified.
 
 ## Next milestones
 
-1. **Hosted verification.** Choose a server/domain, run the portable deployment, validate certificates and backups, and confirm TURN allocations and real media on different networks. The deployment package is prepared; no hosting has been purchased or started.
+1. **Free home-hosted media test.** Retest remote music and direct live feeds using Open Internet Playtest.bat with the existing Funnel HTTPS address. If direct feeds cannot connect, configure and verify TURN. Renting a server can wait until the demo is proven.
 2. **Group usability.** Match remote laser trails to the local effect and identity color, add subtle audio activity indicators and a clearer incoming-sound prompt. Player identity/color editing already exists under the pencil beside your name in Online. Explore sharing screen video/audio from one capture to reduce duplicate browser indicators; the app cannot hide browser-owned sharing bars.
 3. **Group playtest and fixes.** Test with 2–6 people on different networks, including Brave and physical camera/OBS/screen/audio pickers. Check reconnects, saved-room recovery, source changes, pointer latency and browser differences. Fix the issues found before calling the full feature demo ready.
 
-The core feature implementation is complete for a local online demo. Hosting, relay verification and a real group playtest are still required to verify internet readiness. Docker/deployment files include the live signaling service, but no public service or TURN relay has been deployed. Public hosting needs a chosen service and any associated cost approved by the owner.
+The core shared tabletop has passed an initial internet test. Live-media networking, music retesting and a fuller group playtest remain before calling the demo internet-ready. Permanent deployment and backup restoration can be verified later using the prepared Docker package; it has not been deployed. Any paid hosting still needs a chosen service and cost approved by the owner.
 
 ## Later, if playtests justify it
 

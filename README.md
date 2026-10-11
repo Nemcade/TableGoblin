@@ -4,6 +4,8 @@ A tabletop for play: colored shapes, image tokens, drawing, physical nesting, li
 
 ## Open the app
 
+For a free internet playtest from your own computer, see [PLAYTEST.md](PLAYTEST.md) and use **Open Internet Playtest.bat** with your Tailscale Funnel address.
+
 For internet hosting, see the [portable deployment package](deploy/README.md). **Prepare Internet Deployment.bat** creates private settings for a Linux server with Docker Compose; hosting is a separate step.
 
 **Double-click `Open Table Goblin.bat`.** The launcher starts a server on your computer and opens your default browser. Keep the terminal window open while using the table; close it to stop. Chrome or Edge is recommended for live capture.

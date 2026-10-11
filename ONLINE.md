@@ -4,6 +4,8 @@
 
 See [ROADMAP.md](ROADMAP.md) for completed milestones and the remaining work toward a full feature demo.
 
+For a free test hosted from your Windows computer using Tailscale Funnel, follow [PLAYTEST.md](PLAYTEST.md). **Open Internet Playtest.bat** enables public STUN discovery for direct live media; it does not provide a TURN relay or start/change Tailscale. Normal online/local launches retain their previous configuration.
+
 ## Open locally
 
 With Node.js 22.12+ installed:
@@ -139,6 +141,7 @@ The room service serves the app and API together. Deploy one instance behind HTT
 | `TABLE_GOBLIN_DATA` | `./room-data` | Persistent private room directory |
 | `NODE_ENV` | unset | Set `production` behind HTTPS |
 | `TABLE_GOBLIN_ICE_SERVERS` | `[]` | Authenticated browser STUN/TURN configuration as JSON |
+| `TABLE_GOBLIN_INTERNET_PLAYTEST` | unset | Set `1` for public STUN discovery unless custom ICE/TURN settings override it |
 | `TABLE_GOBLIN_TURN_URLS` | unset | JSON list of coturn URLs using expiring credentials |
 | `TABLE_GOBLIN_TURN_SECRET` | unset | Server-only signing secret shared with coturn; at least 32 characters |
 
@@ -164,5 +167,7 @@ Identity and navigation checks cover self-only profile updates, durable profile 
 `test:live` uses its own temporary server and three independent browser contexts. It checks actual received camera pixels and audio waveforms, source changes/aspect ratios, crops and copies, late joins, browser refresh, receive retries, permission checks, personal listening, ephemeral signaling, player publishing/removal, last-copy deletion and room leave. Production UI checks use simulated capture devices, keeping real hardware and permission pickers untouched. Unit tests also reject oversized or forged signals and stale connections. Cross-network TURN and physical-device checks remain manual.
 
 `test:deploy` checks coturn-compatible signing/expiry, per-member credentials, invalid configuration, non-overwriting setup, production secure cookies, authenticated credential reads, removed-member rejection, restart recovery and exclusion of signing secrets/relay credentials from saved rooms. Live tests also cover configuration renewal/retry without replacing an established media connection. Docker/HTTPS/public relay checks are separate steps in the deployment guide.
+
+`npm run test:music` checks actual remote OGG decoding/playback while ordered room messages are queued for over a second and objects are moved/created. It verifies continuous playhead progress without seek interruptions. Player unit tests cover delayed/duplicate clock samples, small drift correction, deliberate seeks, large drift, buffering and loop boundaries. Network-delay samples no longer rewind the music clock; small drift uses gentle playback-speed correction rather than seeking.
 
 File-media checks cover private uploads, format/truncation rejection, byte-range playback, ownership, removed sessions and interrupted uploads, real WAV/audio-only MP4/WebM/MP4 decoding, shared transport through remote edits, personal listening, crop/copy behavior, refresh/restart, compact commands and portable/recovery exports. Playback checks cover owner/editor authorization, independent object versions/undo, stale controls, locks, durable retry receipts, commands interrupted by removal, delayed HTTP replies, lost acknowledgements, sound rejection/retry, drift correction, single-command seeks and non-looping end/replay.

@@ -13,6 +13,7 @@ function open() {
   for (const file of ["dist/index.html", ".server-runtime/room-state.cjs", ".server-runtime/room-operations.cjs", ".server-runtime/room-permissions.cjs", ".server-runtime/room-dice.cjs", ".server-runtime/dice-physics.cjs", ".server-runtime/dice-throw.cjs"]) if (!fs.existsSync(path.join(project, file)))
     throw new Error("The built app is missing. Run npm install and npm run build in this folder first.");
   const { serverBuild } = require("./online-runtime.cjs");
+  const iceProfile = require("./room-ice.cjs").createIce().profile;
   let response;
   try { response = await fetch(url + "/api/health", { signal: AbortSignal.timeout(1500) }); }
   catch (error) { if (error.cause?.code !== "ECONNREFUSED") throw new Error(`Could not check the service on port ${port}. Close the existing server window and try again.`); }
@@ -20,9 +21,11 @@ function open() {
     const info = await response.json().catch(() => ({}));
     if (info.app !== "table-goblin") throw new Error(`Port ${port} is used by another application. Set PORT to a free port before starting Table Goblin.`);
     if (info.build !== serverBuild()) throw new Error(`An older or different Table Goblin server is already running on port ${port}.\nClose its existing server window (or press Ctrl+C there), then open this launcher again.\nRefresh the GM and player browsers afterward. Your saved rooms and identities are kept.\nThe outdated server has not been stopped automatically.`);
+    if (info.iceProfile !== iceProfile) throw new Error("The running server uses different live-media settings.\nClose the existing Table Goblin server window and reopen this launcher.\nKeep Funnel running, then refresh the GM and player browsers. Your saved room is kept.");
     console.log(`Table Goblin is already running: ${url}`); open(); return;
   }
   const child = spawn(process.execPath, [path.join(__dirname, "room-server.cjs")], { cwd: project, stdio: ["inherit", "pipe", "inherit"], windowsHide: true });
+  if (iceProfile === "direct") console.log("Direct live-media discovery is enabled. Some internet connections will still need a relay.");
   let started = false;
   child.stdout.on("data", chunk => { process.stdout.write(chunk); if (!started && chunk.toString().includes("Table Goblin online:")) { started = true; open(); } });
   child.on("error", error => { console.error(error.message); process.exitCode = 1; });

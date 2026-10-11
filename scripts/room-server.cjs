@@ -164,7 +164,7 @@ const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
-    if (url.pathname === "/api/health") return json(res, 200, { app: "table-goblin", online: true, protocol: ROOM_PROTOCOL, build: runningBuild });
+    if (url.pathname === "/api/health") return json(res, 200, { app: "table-goblin", online: true, protocol: ROOM_PROTOCOL, build: runningBuild, iceProfile: live.config.profile });
     if (url.pathname.startsWith("/api/")) {
       if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) fail(403, "Use this server's own room link.");
       if (req.headers["sec-fetch-site"] === "cross-site") fail(403, "Cross-site room requests are not allowed.");
