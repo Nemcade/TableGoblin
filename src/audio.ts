@@ -2,6 +2,8 @@ export type AudioSourceState = {
   id: string;
   name: string;
   kind: "display" | "input";
+  /** Sound from a screen capture; stopping this source leaves its picture running. */
+  displaySourceId?: string;
   monitor: boolean;
   muted: boolean;
   volume: number;
@@ -28,7 +30,7 @@ export class TableAudio {
     void this.context.resume().catch(() => {});
     return this.context;
   }
-  add(stream: MediaStream, name: string, kind: AudioSourceState["kind"]) {
+  add(stream: MediaStream, name: string, kind: AudioSourceState["kind"], displaySourceId?: string) {
     if (!stream.getAudioTracks().length)
       throw new Error("The source did not provide an audio track.");
     const ctx = this.prepare(),
@@ -48,7 +50,10 @@ export class TableAudio {
       id,
       name,
       kind,
-      stream,
+      // An attached source owns only the audio tracks. The table owns the video
+      // and releases both parts when the final screen surface is removed.
+      stream: displaySourceId ? new MediaStream(stream.getAudioTracks()) : stream,
+      displaySourceId,
       node,
       analyser,
       gain,
@@ -58,7 +63,7 @@ export class TableAudio {
       volume: 0.65,
       level: 0,
     });
-    stream
+    this.sources.get(id)!.stream
       .getTracks()
       .forEach((track) =>
         track.addEventListener("ended", () => this.stop(id), { once: true }),
@@ -78,6 +83,7 @@ export class TableAudio {
         id: s.id,
         name: s.name,
         kind: s.kind,
+        displaySourceId: s.displaySourceId,
         monitor: s.monitor,
         muted: s.muted,
         volume: s.volume,
@@ -111,6 +117,11 @@ export class TableAudio {
     s.gain.disconnect();
     s.stream.getTracks().forEach((t) => t.stop());
     this.changed();
+  }
+  stopDisplay(sourceId: string) {
+    for (const source of [...this.sources.values()]) {
+      if (source.displaySourceId === sourceId) this.stop(source.id);
+    }
   }
   clear() {
     [...this.sources.keys()].forEach((id) => this.stop(id));

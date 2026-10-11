@@ -193,7 +193,7 @@ require("../node_modules/esbuild").buildSync({
   });
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page
-    .getByRole("button", { name: "Live screen Bring a window to the table" })
+    .getByRole("button", { name: "Live screen Window or screen · optional sound" })
     .click();
   await page.getByRole("button", { name: "Live feeds", exact: true }).click();
   await page.locator(".selected-feed").getByRole("button", { name: "Crop", exact: true }).click();

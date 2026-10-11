@@ -763,7 +763,7 @@ function App() {
                 >
                   <Icon name="screen" />
                   <span>
-                    Live screen<small>Bring a window to the table</small>
+                    Live screen<small>Window or screen · optional sound</small>
                   </span>
                   <span className="live-dot" />
                 </button>

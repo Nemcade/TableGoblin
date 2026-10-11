@@ -2395,6 +2395,9 @@ kbd {
 .feed-status i { width: 5px; height: 5px; border-radius: 50%; background: var(--mood-muted); }
 .feed-status.connected i { background: var(--mood-accent); }
 .live-feed-actions { padding: 6px 6px 0; }
+.live-feed-sound { flex-wrap: wrap; }
+.live-feed-sound small { margin-right: auto; color: var(--mood-muted); font-size: 10px; }
+.live-capture-note { margin: 12px 6px; color: var(--mood-muted); font-size: 10px; line-height: 1.6; }
 .app .live-feed-actions button, .app .live-feeds-footer button { width: auto; padding: 6px 9px; font-size: 10px; border: 1px solid var(--mood-border); }
 .app .live-feed-actions .feed-stop { border-color: transparent; color: var(--mood-muted); }
 .live-feeds-footer { flex-wrap: wrap; border-top: 1px solid var(--mood-border); padding-top: 12px; }

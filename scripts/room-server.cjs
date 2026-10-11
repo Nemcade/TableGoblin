@@ -401,6 +401,7 @@ const server = http.createServer(async (req, res) => {
         const next = { ...room, playerEditing: v.playerEditing };
         persist(next); Object.assign(room, next);
         for (const c of clients.get(room.id) || []) send(c, "state", state(room, room.members.find(m => m.id === c.id)));
+        live.reconcile(room);
         return json(res, 200, state(room, me));
       }
       if (["operations", "undo", "redo"].includes(action)) {

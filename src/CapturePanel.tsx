@@ -4,6 +4,7 @@ import type { AudioSourceState } from "./audio";
 import { NumericValue } from "./NumericValue";
 import { DevicePicker } from "./DevicePicker";
 import { RoomFileControls } from "./RoomFileControls";
+import { surfaceName } from "./live-label";
 
 function message(error: unknown) {
   if (error instanceof DOMException) {
@@ -398,6 +399,7 @@ export function AudioPanel({
         <p className="capture-note">
           Microphones and virtual audio devices appear as inputs. Tab and
           computer audio availability depends on your browser and system.
+          {" "}For picture and sound together, use + Add → Live screen and enable Share audio in the browser picker.
         </p>
         {error && (
           <p className="capture-error" role="alert">
@@ -427,20 +429,21 @@ export function AudioPanel({
               <article key={s.id} className="audio-source">
                 <div className="audio-source-heading">
                   <div>
-                    <strong>{s.name}</strong>
+                    <strong>{s.displaySourceId ? surfaceName(s.name) : s.name}</strong>
                     <small>
-                      {s.kind === "display" ? "Tab / computer" : "Audio input"}
+                      {s.displaySourceId ? "Screen sound · same capture as picture" : s.kind === "display" ? "Tab / computer" : "Audio input"}
                       {engine.roomActive ? engine.roomLive?.owns(s.id) ? " · shared with room" : " · connecting…" : ""}
                     </small>
                   </div>
                   <button
                     aria-label={`Stop ${s.name}`}
+                    title={s.displaySourceId ? "Keep the picture running; change source to share sound again" : undefined}
                     onClick={() => {
                       engine.audio.stop(s.id);
                       setSources(engine.audio.list());
                     }}
                   >
-                    Stop
+                    {s.displaySourceId ? "Stop sound" : "Stop"}
                   </button>
                 </div>
                 <div

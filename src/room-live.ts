@@ -101,7 +101,7 @@ export class RoomLive {
   private stopLocal(id: string) {
     this.publications.delete(id);
     const media = this.engine.media.get(id);
-    if (media && !media.remote) { this.engine.media.delete(id); media.stream.getTracks().forEach(t => t.stop()); media.video.srcObject = null; }
+    if (media && !media.remote) this.engine.releaseLiveSource(id);
     this.engine.audio.stop(id);
     for (const [key, peer] of this.peers) if (peer.source.source === id) this.closePeer(key);
     this.engine.refreshPlaybackUI();
@@ -111,7 +111,7 @@ export class RoomLive {
     for (const id of this.publications.keys()) this.stopLocal(id);
     // Captures that were placed but not yet published also belong to this room.
     for (const [id, media] of this.engine.media) if (!media.remote) {
-      media.stream.getTracks().forEach(t => t.stop()); media.video.srcObject = null; this.engine.media.delete(id);
+      this.engine.releaseLiveSource(id);
     }
     this.engine.audio.clear(); this.sources = []; this.failed.clear(); this.retryAt.clear();
   }

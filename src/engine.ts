@@ -58,6 +58,7 @@ import { emptyRoomDice, type RoomDice } from "./room-dice";
 import type { DiceSetup } from "./dice-types";
 import { roomImage, inlineRoomArtwork } from "./room-artwork";
 import { roomMedia, roomMediaLimit, inlineRoomMedia } from "./room-media";
+import { surfaceName } from "./live-label";
 import { type PlaybackRequest, type RoomPlayback } from "./room-playback";
 import { RoomFilePlayer } from "./room-player";
 import type { RoomLive } from "./room-live";
@@ -401,11 +402,9 @@ export class TableEngine {
   private emit(save = true) {
     if (this.disposed) return;
     // A removed live surface must stop capturing, even when removed through undo.
-    for (const [id, item] of this.media) {
+    for (const id of this.media.keys()) {
       if (!this.scene.objects.some((o) => (o.sourceId ?? o.id) === id)) {
-        item.stream.getTracks().forEach((t) => t.stop());
-        item.video.srcObject = null;
-        this.media.delete(id);
+        this.releaseLiveSource(id);
       }
     }
     this.renderer.sync(this.scene);
@@ -461,7 +460,7 @@ export class TableEngine {
       this.savingEnabled = false;
       this.roomActive = true;
       this.audio.clear();
-      this.media.forEach(media => media.stream.getTracks().forEach(track => track.stop()));
+      for (const id of this.media.keys()) this.releaseLiveSource(id);
     }
     this.roomChange = change;
     this.applyRoom(table);
@@ -837,8 +836,7 @@ export class TableEngine {
       this.cancel();
       const previous = clone(this.scene), wasEnabled = this.savingEnabled;
       this.savingEnabled = false;
-      this.media.forEach((m) => { m.stream.getTracks().forEach((t) => t.stop()); m.video.srcObject = null; });
-      this.media.clear();
+      for (const id of this.media.keys()) this.releaseLiveSource(id);
       this.restore(saved);
       this.loadError = null;
       this.undoStack.push(previous); this.redoStack = [];
@@ -1493,18 +1491,35 @@ export class TableEngine {
     if (!this.liveConnectAllowed(targetId)) return;
     if (!navigator.mediaDevices?.getDisplayMedia) {
       this.notify(
-        "Screen sharing needs a browser with capture support, on localhost. Try Chrome or Edge.",
+        "Screen sharing needs a browser with capture support on HTTPS or localhost. Try Brave, Chrome or Edge.",
       );
       return;
     }
     let capture: MediaStream | undefined;
     try {
+      const withAudio = !this.roomActive || this.roomGM || this.roomCreating;
+      if (withAudio) this.audio.prepare();
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
-        audio: false,
-      });
+        audio: withAudio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
+        systemAudio: "include",
+      } as DisplayMediaStreamOptions & { systemAudio: string });
       capture = stream;
-      await this.connectLive(stream, "screen", stream.getVideoTracks()[0]?.label || "Live screen", targetId);
+      const key = await this.connectLive(stream, "screen", stream.getVideoTracks()[0]?.label || "Live screen", targetId);
+      if (stream.getAudioTracks().some(t => t.readyState === "live")) {
+        // Adding live sound follows the room's existing source-creation grant.
+        // A screen owner can still reconnect their picture after it is revoked.
+        if (!this.creationAllowed()) stream.getAudioTracks().forEach(t => t.stop());
+        else {
+          try {
+            this.audio.add(stream, `${surfaceName(this.scene.objects.find(o => (o.sourceId ?? o.id) === key)?.name || "Screen")} · sound`, "display", key);
+            this.notify("Screen and sound connected. Manage sound in Live feeds or Audio sources.");
+          } catch {
+            stream.getAudioTracks().forEach(t => t.stop());
+            this.notify("Screen connected, but its sound could not start. Change source to try again.");
+          }
+        }
+      }
     } catch (err) {
       capture?.getTracks().forEach((t) => t.stop());
       if (err instanceof DOMException && err.name === "NotAllowedError")
@@ -1537,12 +1552,11 @@ export class TableEngine {
       const obj = target ?? this.add(kind);
       if (!this.scene.objects.some(o => o.id === obj.id)) throw new Error("The source could not be placed on this table.");
       if (!target) obj.width = kind === "camera" ? 420 : 520;
-      const key = obj.sourceId ?? obj.id, previous = this.media.get(key);
+      const key = obj.sourceId ?? obj.id;
+      // Replace only after the new source is playing; cancellation keeps the old feed.
+      this.releaseLiveSource(key);
       const item = { video, stream };
       this.media.set(key, item);
-      // Replace only after the new source is playing; cancellation keeps the old feed.
-      previous?.stream.getTracks().forEach(t => t.stop());
-      if (previous) previous.video.srcObject = null;
       const dimensions = () => {
         if (this.media.get(key) !== item || this.disposed) return;
         // Actual frames take precedence over track settings, which may stay stale
@@ -1571,9 +1585,7 @@ export class TableEngine {
         () => {
           // An old source's queued ended event must not remove its replacement.
           if (this.media.get(key) !== item) return;
-          this.media.delete(key);
-          stream.getTracks().forEach((t) => t.stop());
-          video.srcObject = null;
+          this.releaseLiveSource(key);
           if (!this.disposed) {
             this.emit();
             this.notify("Live source ended. Select its surface to reconnect.");
@@ -1583,6 +1595,7 @@ export class TableEngine {
       );
       this.emit();
       this.notify(target ? "Source connected. Crops and drawings were kept." : "Live source placed. Double-click to crop it.");
+      return key;
     } catch (err) {
       stream.getTracks().forEach((t) => t.stop());
       video.srcObject = null;
@@ -1654,12 +1667,19 @@ export class TableEngine {
     if (this.roomLive) { void this.roomLive.stop(key); return; }
     const item = this.media.get(key);
     if (item) {
-      this.media.delete(key);
-      item.stream.getTracks().forEach((t) => t.stop());
-      item.video.srcObject = null;
+      this.releaseLiveSource(key);
       this.emit();
       this.notify("Live source stopped.");
     }
+  }
+  /** Release the capture before notifying audio listeners, which may emit again. */
+  releaseLiveSource(key: string) {
+    const item = this.media.get(key);
+    if (!item) return;
+    this.media.delete(key);
+    item.stream.getTracks().forEach(t => t.stop());
+    item.video.srcObject = null;
+    this.audio.stopDisplay(key);
   }
   private liveConnectAllowed(id?: string) {
     if (!this.roomActive) return true;

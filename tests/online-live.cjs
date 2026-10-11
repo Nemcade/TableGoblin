@@ -90,23 +90,7 @@ let server, browser;
     await gm.evaluate(id => engine.audio.set(id, { muted: true }), audio); assert.equal(await gm.evaluate(() => audioStream.getAudioTracks()[0].enabled), false);
     await gm.evaluate(id => engine.audio.stop(id), audio); await wait(player, () => !engine.roomLive.remoteAudio().length);
     console.log('Live audio: tracks, sound gate, personal volume/mute, input mute and cleanup passed.');
-    const screen = await gm.evaluate(async () => {
-      navigator.mediaDevices.getDisplayMedia = async options => {
-        const stream = capture(240, 135);
-        if (options.audio) { const d = ac.createMediaStreamDestination(), o = ac.createOscillator(); o.connect(d); o.start(); stream.addTrack(d.stream.getAudioTracks()[0]); }
-        window.displayStream = stream; return stream;
-      };
-      await engine.addScreen(); return engine.scene.objects.at(-1).id;
-    });
-    await wait(player, id => engine.media.get(id)?.video.videoWidth === 240, screen);
-    assert.equal(await player.evaluate(id => engine.scene.objects.find(o => o.id === id).kind, screen), 'screen');
-    await gm.evaluate(id => engine.delete(new Set([id])), screen); await wait(player, id => !engine.media.has(id), screen);
-    const tabAudio = await gm.evaluate(async () => { await engine.addDisplayAudio(); return engine.audio.list()[0].id; });
-    await wait(player, id => engine.roomLive.remoteAudio().some(s => s.source === id && s.status === 'Live'), tabAudio);
-    assert.equal(await player.evaluate(id => { const s = engine.roomLive.sources.find(s => s.source === id); return engine.roomLive.peers.get(`${id}:${s.browser}`).media.stream.getVideoTracks().length; }, tabAudio), 0, 'Audio sharing never transmits the picker-required video track');
-    await gm.evaluate(id => engine.audio.stop(id), tabAudio); await wait(player, () => !engine.roomLive.remoteAudio().length);
-    assert.equal(await gm.evaluate(() => displayStream.getVideoTracks()[0].readyState), 'ended');
-    console.log('Screen capture and tab/system audio: shared tracks and capture cleanup passed.');
+    await require('./online-capture.cjs')({ gm, player, wait });
     await require('./online-live-ui.cjs')({ browser, contexts, pages, base, room, gm, player, late, source, wait, errors });
     const results = await player.evaluate(async source => {
       const s = engine.roomLive.sources.find(s => s.source === source), root = `/api/rooms/${client.state.id}/live`;
@@ -119,8 +103,26 @@ let server, browser;
     const saved = fs.readFileSync(path.join(data, `${room.id}.json`), 'utf8'); assert.ok(!saved.includes('a=ice-') && !saved.includes('generation') && !saved.includes('Test microphone'));
     await gm.evaluate(() => engine.delete(new Set(engine.scene.objects.map(o => o.id)))); await wait(player, () => !engine.media.size && !engine.roomLive.sources.length);
     assert.equal(await gm.evaluate(() => reconnected.getTracks()[0].readyState), 'ended');
-    const playerSource = await player.evaluate(async () => { window.playerCapture = capture(); await engine.addCamera(playerCapture, 'Player camera'); return engine.scene.objects.at(-1).id; });
+    const playerSource = await player.evaluate(async () => {
+      navigator.mediaDevices.getDisplayMedia = async options => {
+        const stream = capture();
+        if (options.audio) { const ac = new AudioContext(), tone = ac.createOscillator(), destination = ac.createMediaStreamDestination(); await ac.resume(); tone.connect(destination); tone.start(); stream.addTrack(destination.stream.getAudioTracks()[0]); }
+        window.playerCapture = stream; return stream;
+      };
+      await engine.addScreen(); return engine.scene.objects.at(-1).id;
+    });
     await wait(gm, id => engine.media.get(id)?.video.videoWidth === 160, playerSource);
+    await wait(gm, () => engine.roomLive.remoteAudio().some(s => s.status === 'Live'));
+    await gm.evaluate(() => api(`/api/rooms/${client.state.id}/permissions`, { playerEditing: false }));
+    await wait(player, () => !engine.roomCreating && !engine.audio.count);
+    await wait(gm, () => !engine.roomLive.remoteAudio().length);
+    assert.equal(await player.evaluate(() => playerCapture.getVideoTracks()[0].readyState), 'live', 'Revoking source creation stops sound while preserving an owned screen');
+    await player.evaluate(async id => { await engine.addScreen(id); }, playerSource);
+    assert.equal(await player.evaluate(() => playerCapture.getAudioTracks().length), 0, 'A screen owner reconnects without requesting unauthorized sound');
+    await gm.evaluate(() => api(`/api/rooms/${client.state.id}/permissions`, { playerEditing: true }));
+    await wait(player, () => engine.roomCreating);
+    await player.evaluate(async id => { await engine.addScreen(id); }, playerSource);
+    await wait(gm, () => engine.roomLive.remoteAudio().some(s => s.status === 'Live'));
     const playerId = await player.evaluate(() => client.state.me.id);
     await gm.evaluate(async member => {
       const state = await api(`/api/rooms/${client.state.id}/state`);
@@ -128,13 +130,14 @@ let server, browser;
     }, playerId);
     await wait(player, () => roomStatus === 'removed');
     await wait(gm, id => !engine.media.has(id), playerSource);
-    assert.equal(await player.evaluate(() => playerCapture.getTracks()[0].readyState), 'ended', 'Removal stops a real publishing capture');
+    assert.equal(await player.evaluate(() => playerCapture.getTracks().every(t => t.readyState === 'ended')), true, 'Removal stops both parts of a publishing capture');
     assert.equal(await player.evaluate(() => engine.roomLive), null);
     console.log('Player publication and active capture/session revocation passed.');
-    const finalSource = await gm.evaluate(async () => { window.finalCapture = capture(); await engine.addCamera(finalCapture, 'Leave test'); return engine.scene.objects.at(-1).id; });
-    await wait(late, id => engine.media.get(id)?.video.videoWidth === 160, finalSource);
+    const finalSource = await gm.evaluate(async () => { await engine.addScreen(); window.finalCapture = displayCaptures.at(-1); return engine.scene.objects.at(-1).id; });
+    await wait(late, id => engine.media.get(id)?.video.videoWidth === 240, finalSource);
+    await wait(late, () => engine.roomLive.remoteAudio().some(s => s.status === 'Live'));
     await gm.evaluate(() => { client.close(); engine.leaveRoom(); }); await wait(late, () => !engine.media.size && !engine.roomLive.sources.length);
-    assert.equal(await gm.evaluate(() => finalCapture.getTracks()[0].readyState), 'ended'); assert.deepEqual(errors, []);
+    assert.equal(await gm.evaluate(() => finalCapture.getTracks().every(t => t.readyState === 'ended') && engine.audio.count === 0), true); assert.deepEqual(errors, []);
     console.log('Live ownership, stale signals, ephemeral signaling, last-copy cleanup and room leave passed.');
   } catch (error) {
     for (const [i, p] of pages.entries()) console.error('Browser', i, await p.evaluate(() => ({ notices, roomStatus, sources: engine.roomLive?.sources, peers: engine.roomLive && [...engine.roomLive.peers.values()].map(p => ({ status: p.status, state: p.pc.connectionState, signaling: p.pc.signalingState })) })).catch(() => ({})));

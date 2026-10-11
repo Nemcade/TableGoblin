@@ -11,6 +11,8 @@ Your computer hosts the room. Tailscale Funnel supplies its HTTPS address. No re
 5. Play an audio file while somebody moves/creates objects. Check whether the remote music remains smooth.
 6. In **Live feeds**, reconnect an existing camera or screen source. The receiving player can use **Retry connection** if needed. Try one source first, then audio/other sources.
 
+For **screen picture and sound together**, use **Add → Live screen**, choose a tab/screen in the browser picker and enable **Share audio**. If you already have separate screen and tab-audio captures, stop the old tab-audio source in Audio sources, then use the screen's **Change source** with Share audio enabled. This uses one capture for both parts. Live feeds has **Mute sound** (easy to unmute) and **Stop sound** (picture keeps running; Change source to capture sound again). A screen/window without an available audio option still works as a picture. The app cannot hide the browser's own sharing bar.
+
 If Funnel was stopped, open PowerShell and run:
 
 ```powershell

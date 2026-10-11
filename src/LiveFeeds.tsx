@@ -1,13 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { TableEngine } from "./engine";
 import type { Surface } from "./model";
-
-export function surfaceName(name: string) {
-  if (/^web-contents-media-stream:/i.test(name)) return "Shared tab";
-  if (/^window:\d+:\d+$/i.test(name)) return "Shared window";
-  if (/^screen:\d+:\d+$/i.test(name) || (/^[A-Za-z0-9+/]{60,}={0,2}$/.test(name) && /[+/=]/.test(name))) return "Shared screen";
-  return name;
-}
+import { surfaceName } from "./live-label";
+export { surfaceName } from "./live-label";
 
 export function LiveFeeds({ engine, onClose, onConnect, onAddCamera }: {
   engine: TableEngine;
@@ -16,6 +11,7 @@ export function LiveFeeds({ engine, onClose, onConnect, onAddCamera }: {
   onAddCamera: () => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
+  const audio = engine.audio.list();
   const feeds = new Map<string, Surface[]>();
   for (const obj of engine.scene.objects) {
     if (obj.kind !== "screen" && obj.kind !== "camera") continue;
@@ -53,6 +49,7 @@ export function LiveFeeds({ engine, onClose, onConnect, onAddCamera }: {
         const canConnect = !engine.roomActive || !!live?.canConnect(key);
         const status = live?.status(key) ?? (connected ? "Live" : "Stopped");
         const editable = engine.objectEditable(surface.id, true);
+        const sound = audio.find(s => s.displaySourceId === key);
         return <article key={key} className={`live-feed ${key === selectedKey ? "selected-feed" : ""}`} aria-label={surfaceName(surface.name)}>
           <div className="live-feed-heading">
             <button className="live-feed-locate" aria-label={`Show ${surfaceName(surface.name)} on table`}
@@ -68,6 +65,12 @@ export function LiveFeeds({ engine, onClose, onConnect, onAddCamera }: {
             {(source && (live?.owns(key) || engine.roomGM) || connected && !live) && <button className="feed-stop" onClick={() => engine.stopScreen(surface.id)}>{surface.kind === "camera" ? "Stop camera" : "Stop sharing"}</button>}
             {source && <small>Shared by {source.name}</small>}
           </div>
+          {sound && <div className="live-feed-actions live-feed-sound">
+            <small>Screen sound · {sound.muted ? "muted" : "on"}</small>
+            <button aria-label={`${sound.muted ? "Unmute" : "Mute"} screen sound for ${surfaceName(surface.name)}`} aria-pressed={sound.muted}
+              onClick={() => engine.audio.set(sound.id, { muted: !sound.muted })}>{sound.muted ? "Unmute sound" : "Mute sound"}</button>
+            <button onClick={() => engine.audio.stop(sound.id)} title="Keep the picture running; change source to share sound again">Stop sound</button>
+          </div>}
           {objects.length === 1 ? <div className="live-surface-actions">
             <button disabled={surface.locked || !editable} title={surface.locked ? "Unlock to crop" : undefined} onClick={() => { onClose(); engine.edit(surface.id); }}>Crop</button>
             <button disabled={!canAdd} onClick={() => engine.duplicate(new Set([surface.id]))}>Duplicate</button>
@@ -88,6 +91,7 @@ export function LiveFeeds({ engine, onClose, onConnect, onAddCamera }: {
         </article>;
       })}
     </div>
+    <p className="live-capture-note">For picture and sound together, enable Share audio in the browser picker. One capture shares both.</p>
     <div className="live-feeds-footer">
       <button disabled={!canAdd} onClick={() => { onClose(); void engine.addScreen(); }}>＋ Screen</button>
       <button disabled={!canAdd} onClick={onAddCamera}>＋ Camera</button>
