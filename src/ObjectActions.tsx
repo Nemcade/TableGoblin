@@ -7,6 +7,7 @@ import { FontPicker, TextExtras, TextModeControl } from "./TextControls";
 import { textColor, textMode, type TextSettings } from "./text";
 import { NumericValue } from "./NumericValue";
 import { DevicePicker } from "./DevicePicker";
+import { RoomFileControls } from "./RoomFileControls";
 
 function ObjectSharing({ engine, selection }: { engine: TableEngine; selection: Surface[] }) {
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -78,13 +79,14 @@ export function ObjectActions({ engine, selection, point, colors, onClose }: {
     {single?.kind === "text" && <button disabled={single.locked || !editable} onClick={() => { onClose(); engine.edit(single.id); }}>Edit text <small>Double-click</small></button>}
     {editable && single?.kind === "text" && !single.locked && <TextObjectSettings engine={engine} object={single} />}
     {single && (single.image || single.video) && <button disabled={single.locked || !editable} title={single.locked ? "Unlock to edit" : undefined} onClick={() => { onClose(); engine.edit(single.id); }}>{isShape(single) ? "Edit art" : "Crop"}</button>}
-    {single && (single.video || single.audio || single.animated) && <button onClick={() => engine.togglePlayback(single.id)}>{single.paused ? (single.audio ? "Play audio" : "Play media") : (single.audio ? "Pause audio" : "Pause media")}</button>}
-    {single && engine.roomActive && (single.video || single.audio) && <p className="widget-note">Playback and volume affect your own view.</p>}
+    {single && (single.video || single.audio || single.animated) && <button disabled={engine.roomActive && !!(single.video || single.audio) && !engine.canControlPlayback(single)} onClick={() => engine.togglePlayback(single.id)}>{single.paused ? (single.audio ? "Play audio" : "Play media") : (single.audio ? "Pause audio" : "Pause media")}</button>}
+    {single && engine.roomActive && (single.video || single.audio) && <p className="widget-note">Playback is shared. Mute and volume affect your own listening.</p>}
     {single?.audio && <>
-      <button onClick={() => engine.restartAudio(single.id)}>Restart audio</button>
+      <button disabled={engine.roomActive && !engine.canControlPlayback(single)} onClick={() => engine.restartAudio(single.id)}>Restart audio</button>
       <label className="audio-file-volume">Volume <input aria-label="Audio file volume" type="range" min="0" max="100" value={(single.volume ?? .65) * 100} onChange={e => engine.setFileAudio(single.id, { volume: Number(e.target.value) / 100 })} /><small>{Math.round((single.volume ?? .65) * 100)}%</small></label>
-      <button aria-pressed={single.loop ?? false} onClick={() => engine.setFileAudio(single.id, { loop: !single.loop })}>Loop audio <small>{single.loop ? "On" : "Off"}</small></button>
+      <button disabled={engine.roomActive && !engine.canControlPlayback(single)} aria-pressed={single.loop ?? false} onClick={() => engine.setFileAudio(single.id, { loop: !single.loop })}>Loop audio <small>{single.loop ? "On" : "Off"}</small></button>
     </>}
+    {single && engine.roomActive && (single.video || single.audio) && <RoomFileControls engine={engine} object={single} />}
     {editable && shapes.length > 0 && <div className="object-colors">
       <ColorControl label="Shape color" value={shapes[0].color} onChange={(value, preview) => engine.setSurfaceColor(value, preview)} />
       <div className="surface-swatches">{colors.map(color => <button key={color} style={{ background: color }} aria-label={`Surface color ${color}`} onClick={() => engine.setSurfaceColor(color)} />)}</div>

@@ -13,7 +13,7 @@ test("room decoding preserves old-server tables without inventing writable metad
   const moved = structuredClone(table); moved.scene.objects[0].x = 50;
   const event = readRoomState({ revision: 2, table: moved, actor: "gm" }, read)!;
   assert.equal(event.me.id, "player"); assert.equal(event.protocol, 0); assert.equal(event.table.scene.objects[0].x, 50);
-  const current = { ...old, protocol: ROOM_PROTOCOL, dice: { sequence: 0, rolls: [] }, diceAccepted: [], serverTime: Date.now(), access: { [`object:${table.scene.objects[0].id}`]: { owner: me.id, shared: false, editors: [] } }, leases: [], versions: {}, history: { undo: true, redo: false }, accepted: [] };
+  const current = { ...old, protocol: ROOM_PROTOCOL, playback: { sequence: 0, tracks: [] }, playbackAccepted: [], dice: { sequence: 0, rolls: [] }, diceAccepted: [], serverTime: Date.now(), access: { [`object:${table.scene.objects[0].id}`]: { owner: me.id, shared: false, editors: [] } }, leases: [], versions: {}, history: { undo: true, redo: false }, accepted: [] };
   assert.equal(readRoomState({ ...current, protocol: 2, access: undefined, leases: undefined })!.protocol, 2);
   assert.equal(readRoomState({ ...current, protocol: 3, dice: undefined, diceAccepted: undefined, serverTime: undefined })!.protocol, 3);
   assert.equal(readRoomState(current)!.protocol, ROOM_PROTOCOL);

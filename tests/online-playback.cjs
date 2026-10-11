@@ -1,0 +1,46 @@
+const assert = require("node:assert/strict"), { randomUUID } = require("node:crypto");
+module.exports = async (api, operation, root, gm, player) => {
+  let state = (await api(root + "/state", gm.cookie)).json;
+  const id = state.table.scene.objects[0].id;
+  const command = (action, patch = {}, baseline = state) => {
+    const t = baseline.playback.tracks.find(t => t.object === id);
+    return { id: randomUUID(), object: id, ref: t.ref, version: t.version, duration: 10, action, ...patch };
+  };
+  assert.equal((await api(root + "/playback", null, command("play"))).status, 401);
+  const tableRevision = state.revision, objectVersion = state.versions[`object:${id}`], history = structuredClone(state.history);
+  const play = command("play"), result = await api(root + "/playback", player.cookie, play); assert.equal(result.status, 200);
+  let transport = result.json; assert.equal(transport.playback.tracks[0].playing, true);
+  assert.equal((await api(root + "/playback", player.cookie, play)).json.playback.sequence, transport.playback.sequence);
+  assert.equal((await api(root + "/playback", player.cookie, { ...play, action: "pause" })).status, 409);
+  assert.equal((await api(root + "/playback", gm.cookie, command("pause"))).status, 409, "A stale control cannot override another actor");
+  state = (await api(root + "/state", gm.cookie)).json;
+  assert.equal(state.revision, tableRevision); assert.equal(state.versions[`object:${id}`], objectVersion); assert.deepEqual(state.history, history);
+  for (const patch of [{ position: -1 }, { position: Infinity }, { position: 11 }, { ref: "blob:fake" }, { duration: 0 }]) assert.equal((await api(root + "/playback", gm.cookie, { ...command("seek", { position: 2 }), ...patch })).status, 400);
+  const edit = structuredClone(state.table); edit.scene.objects[0].locked = true;
+  state = (await api(root + "/operations", gm.cookie, operation(state, edit))).json;
+  transport = (await api(root + "/playback", player.cookie, command("pause"))).json;
+  assert.equal(transport.playback.tracks[0].playing, false, "A placement lock does not prohibit authorized playback");
+  state = (await api(root + "/state", gm.cookie)).json;
+  transport = (await api(root + "/playback", gm.cookie, command("seek", { position: 2.5 }))).json;
+  assert.equal(transport.playback.tracks[0].position, 2.5);
+  state = (await api(root + "/state", gm.cookie)).json;
+  await api(root + "/access", gm.cookie, { ids: [id], policy: { owner: gm.json.me.id, shared: false, editors: [] }, revision: state.revision });
+  state = (await api(root + "/state", gm.cookie)).json;
+  assert.equal((await api(root + "/playback", player.cookie, command("restart"))).status, 403);
+  state = (await api(root + "/access", gm.cookie, { ids: [id], policy: { owner: player.json.me.id, shared: false, editors: [] }, revision: state.revision })).json;
+  transport = (await api(root + "/playback", player.cookie, command("restart"))).json;
+  assert.equal(transport.playback.tracks[0].position, 0); assert.equal(transport.playback.tracks[0].playing, true);
+  state = (await api(root + "/state", gm.cookie)).json;
+  transport = (await api(root + "/playback", gm.cookie, command("loop", { loop: true }))).json;
+  assert.equal(transport.playback.tracks[0].loop, true);
+  state = (await api(root + "/state", gm.cookie)).json;
+  const restart = command("restart"); transport = (await api(root + "/playback", gm.cookie, restart)).json;
+  const saved = transport.playback;
+  console.log("PASS: authorized shared playback, independent object versions/undo, seek/loop, placement locks, stale controls, ownership revocation and retry deduplication");
+  return { pending: command("pause", {}, { ...state, playback: saved }), async afterRestart(request) {
+    const restored = (await request(root + "/state", gm.cookie)).json;
+    assert.deepEqual(restored.playback, saved);
+    assert.equal((await request(root + "/playback", gm.cookie, restart)).json.playback.sequence, saved.sequence);
+    assert.equal((await request(root + "/playback", player.cookie, command("pause", {}, restored))).status, 403);
+  } };
+};

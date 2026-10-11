@@ -25,7 +25,7 @@ async function launcherTests(upstream) {
       child.stderr.on("data", c => process.stderr.write(c)); child.on("error", reject);
     });
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
-    assert.equal(health.protocol, 8); assert.equal(typeof health.build, "string");
+    assert.equal(health.protocol, 9); assert.equal(typeof health.build, "string");
     assert.equal((await runLauncher(port)).code, 0);
   } finally {
     // Terminate only the process tree this test just created, including its
@@ -105,7 +105,7 @@ module.exports = async function compatibilityTests(browser, upstream) {
     await request(root + "/table", host.cookie, { revision: 1, table });
     for (const page of pages) await page.waitForFunction(() => document.querySelector("canvas").getContext("2d").getImageData(880, 450, 1, 1).data[3] > 0);
     await pages[1].reload(); await pages[1].getByLabel("Room connection status").filter({ hasText: "RESTART ROOM SERVER" }).waitFor();
-    for (const previous of [2, 3, 4, 5, 6, 7]) {
+    for (const previous of [2, 3, 4, 5, 6, 7, 8]) {
       protocol = previous;
       for (const page of pages) {
         await page.reload();

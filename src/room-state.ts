@@ -10,9 +10,10 @@ import { locksAllowed, validAccess, type AccessMap, type DragLease } from "./roo
 import { emptyRoomDice, parseRoomDice, validRollReceipts, type RoomDice, type RollReceipt } from "./room-dice.ts";
 import { roomImage } from "./room-artwork.ts";
 import { roomMedia } from "./room-media.ts";
+import { emptyRoomPlayback, parseRoomPlayback, validPlaybackReceipts, type RoomPlayback } from "./room-playback.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 8;
+export const ROOM_PROTOCOL = 9;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean; profileVersion?: number };
 export const validParticipant = (p: any): p is Participant => p && typeof p.id === "string" && typeof p.name === "string" && /^#[0-9a-f]{6}$/i.test(p.color) && ["gm", "player"].includes(p.role) && typeof p.online === "boolean" &&
   (p.profileVersion === undefined || Number.isSafeInteger(p.profileVersion) && p.profileVersion >= 0);
@@ -25,6 +26,7 @@ export type RoomState = {
   accepted: { id: string; revision: number }[];
   access: AccessMap; leases: DragLease[];
   dice: RoomDice; diceAccepted: RollReceipt[]; serverTime: number;
+  playback: RoomPlayback; playbackAccepted: { id: string; sequence: number }[];
   invite?: string;
 };
 /** Decode the API boundary; older servers can still display their saved table. */
@@ -46,7 +48,12 @@ export function readRoomState(value: unknown, previous?: RoomState): RoomState |
     !Array.isArray(v.leases) || !v.leases.every((l: any) => l && typeof l.client === "string" && typeof l.actor === "string" && Number.isFinite(l.expires) && Array.isArray(l.objects) && l.objects.every((id: any) => typeof id === "string")))) return null;
   const dice = parseRoomDice(v.dice);
   if (protocol === ROOM_PROTOCOL && (!dice || !validRollReceipts(v.diceAccepted, dice.sequence) || !Number.isSafeInteger(v.serverTime) || v.serverTime < 0)) return null;
+  const playback = parseRoomPlayback(v.playback);
+  if (protocol === ROOM_PROTOCOL && (!playback || !validPlaybackReceipts(v.playbackAccepted, playback.sequence) ||
+    playback.tracks.some(t => !table.scene.objects.some(o => o.id === t.object && (o.audio ?? o.video) === t.ref)) ||
+    table.scene.objects.some(o => (o.audio || o.video) && !playback.tracks.some(t => t.object === o.id)))) return null;
   return { ...v, protocol, table, dice: dice ?? emptyRoomDice(), diceAccepted: dice && validRollReceipts(v.diceAccepted, dice.sequence) ? v.diceAccepted : [], serverTime: Number.isSafeInteger(v.serverTime) ? v.serverTime : 0,
+    playback: playback ?? emptyRoomPlayback(), playbackAccepted: playback && validPlaybackReceipts(v.playbackAccepted, playback.sequence) ? v.playbackAccepted : [],
     access: v.access ?? {}, leases: v.leases ?? [], versions: metadata ? v.versions : {}, history: metadata ? v.history : { undo: false, redo: false }, accepted: metadata ? v.accepted : [] } as RoomState;
 }
 export const emptySharedTable = (): SharedTable => ({

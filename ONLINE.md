@@ -37,7 +37,7 @@ Both controls are checked by the server and persisted atomically. Recent retries
 ## What is shared
 
 - Shapes, text, raster images (PNG/JPG/WebP/GIF), artwork masks, nesting, object transforms, drawings, deletion, and locks.
-- Uploaded audio/video file objects and their crops. Playback, loop and volume are personal in this stage.
+- Uploaded audio/video file objects, their crops, and synchronized play/pause/restart/seek/loop. Listening volume and mute are personal.
 - GM mood, grid and visual Obscure edits. GM cover opacity stays local to the GM's view.
 - Colored selection outlines and laser points with participant names. Presence is transient; stale laser points expire and disconnected participants' selections disappear.
 - Durable room contents, roles, identities and object ownership/sharing. Server restart preserves them.
@@ -51,7 +51,13 @@ Drop an MP4, WebM, MP3, WAV, Ogg, FLAC or AAC file, or use **Add → Audio file*
 
 Files upload to private room storage before the object is saved. Each file is limited to 64 MB, with at most 512 MB and 512 distinct files per room. Two media uploads can run at once. These limits are separate from the artwork limits. Matching bytes reuse one stored file; object moves and copies send only references. Wait for **Room connected** after importing media. Interrupted uploads retry; permanently rejected uploads retain **Export unsent edit**, including the pending file bytes.
 
-Everyone in the room can load the files and use their personal Play/Pause, Restart, Loop and Volume controls. These controls affect only that browser and do not change room objects, permissions or undo history. Audio starts paused; video loops muted. Personal playback survives unrelated table updates and resets on refresh. Shared start/pause/seek timing and late-join playhead alignment are the next media milestone.
+Everyone in the room can load files. The GM, owner and shared editors can Play/Pause, Restart, Seek and Loop a file for the room, including on locked objects. A compact progress slider appears in the audio panel and the object's right-click menu; dragging previews a position and releasing sends one control. Viewers see playback status but their transport controls are disabled. Volume and **Mute/Unmute for me** stay personal; **Mute room files for me** silences your listening without pausing anyone else. Personal listening preferences survive unrelated edits and reset on refresh. Audio starts paused; videos initially loop muted.
+
+When room audio is playing, **Enable room sound** appears beside the header's audio button or inside the open audio panel. This gives the browser a deliberate listening action. A blocked browser can retry there without changing room playback. Video sound can be enabled through **Unmute for me** in its right-click menu. One person's browser refusing sound never pauses the room.
+
+Playback uses server-clock anchors with bounded drift correction, not a continuously broadcast playhead. Late joins, refreshes and reconnects align to that anchor. This is approximate synchronization for ambience and clips, not sample-accurate audio. Non-looping files stop at their duration; Play restarts an ended file. Playback anchors and retry receipts survive server restart; a playing file's logical timeline advances while the server is stopped. Media must have a readable finite duration of up to seven days to control it.
+
+Transport commands have independent versions and request identities, so playback does not change object versions or object Undo/Redo. Simultaneous stale controls are rejected with an explanation; a lost reply retries the original identity once reconnected. Ownership changes and participant removal are checked again when commands arrive. Deleting or replacing a file discards its transport; copies and undo-restored files receive independent initial playback states. Portable exports preserve media and ordinary object settings, not an active room timeline.
 
 The same object ownership rules apply to moving, cropping, nesting, deleting and copying media. Video crops remain shared and preserve the source aspect ratio. A copied audio tile starts paused and reuses the source file. Portable room exports embed file bytes; copying into a local table or another room downloads the bytes before placement. Importing a portable table into a room uploads its media before saving its objects. Keep access to the source room while copying or exporting.
 
@@ -132,4 +138,4 @@ Online tests use separate browser contexts and an isolated temporary room direct
 
 Identity and navigation checks cover self-only profile updates, durable profile versions, stale tabs, unchanged ownership/entity versions, live labels/colors, reconnect retries, unfinished typing/gestures, different viewport aspect ratios, independent cameras and local camera restoration.
 
-File-media checks cover private uploads, format/truncation rejection, byte-range playback, ownership, removed sessions and interrupted uploads, real WAV/audio-only MP4/WebM/MP4 decoding, personal playback through remote edits, crop/copy behavior, refresh/restart, compact commands and portable/recovery exports.
+File-media checks cover private uploads, format/truncation rejection, byte-range playback, ownership, removed sessions and interrupted uploads, real WAV/audio-only MP4/WebM/MP4 decoding, shared transport through remote edits, personal listening, crop/copy behavior, refresh/restart, compact commands and portable/recovery exports. Playback checks cover owner/editor authorization, independent object versions/undo, stale controls, locks, durable retry receipts, commands interrupted by removal, delayed HTTP replies, lost acknowledgements, sound rejection/retry, drift correction, single-command seeks and non-looping end/replay.

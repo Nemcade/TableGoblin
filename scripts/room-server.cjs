@@ -8,6 +8,7 @@ const { tableChanges, validOperation, operationConflict, applyChanges, expectati
 const { requiredKeys } = require("../.server-runtime/room-operations.cjs");
 const { editsAllowed, canEdit, hierarchy, validAccess, assignNewAccess } = require("../.server-runtime/room-permissions.cjs");
 const { emptyRoomDice, parseRoomDice, parseRollRequest, makeRoll } = require("../.server-runtime/room-dice.cjs");
+const { emptyRoomPlayback, parseRoomPlayback, parsePlaybackRequest, reconcilePlayback, changePlayback, validPlaybackReceipts } = require("../.server-runtime/room-playback.cjs");
 const { diceThrow } = require("../.server-runtime/dice-throw.cjs");
 const diceService = require("./dice-service.cjs"), pendingRolls = new Map();
 const secret = () => randomBytes(32).toString("base64url");
@@ -46,6 +47,8 @@ function identity(v) {
   return { name: v.name.trim(), color: v.color.toLowerCase() };
 }
 function persist(room) {
+  room.playback = reconcilePlayback(room.playback ?? emptyRoomPlayback(), room.table, Date.now());
+  room.playReceipts ??= [];
   const file = path.join(data, `${room.id}.json`), temp = file + ".tmp";
   fs.writeFileSync(temp, JSON.stringify(room), { mode: 0o600 });
   fs.renameSync(temp, file);
@@ -72,12 +75,17 @@ function load(id) {
       if (!Object.values(room.access).every(validAccess)) throw new Error("Invalid sharing data");
       room.dice ??= emptyRoomDice(); room.rollReceipts ??= [];
       if (!parseRoomDice(room.dice)) throw new Error("Invalid dice history");
-      if (artwork.migrate(room)) {
+      const playbackMigration = room.playback === undefined || room.playReceipts === undefined;
+      room.playback ??= emptyRoomPlayback(); room.playReceipts ??= [];
+      if (!parseRoomPlayback(room.playback) || !validPlaybackReceipts(room.playReceipts, room.playback.sequence) || room.playReceipts.some(r => typeof r.actor !== "string" || !/^[a-f0-9]{64}$/.test(r.digest))) throw new Error("Invalid media playback");
+      room.playback = reconcilePlayback(room.playback, room.table, Date.now());
+      const artworkMigration = artwork.migrate(room);
+      if (artworkMigration) {
         const backups = path.join(data, "backups"), backup = path.join(backups, `${id}.before-assets.json`);
         fs.mkdirSync(backups, { recursive: true });
         if (!fs.existsSync(backup)) fs.copyFileSync(path.join(data, `${id}.json`), backup, fs.constants.COPYFILE_EXCL);
-        persist(room);
       }
+      if (artworkMigration || playbackMigration) persist(room);
       rooms.set(id, room);
     } catch (e) { fail(e.code === "ENOENT" ? 404 : 503, e.code === "ENOENT" ? "Room not found." : "This room's saved data could not be opened. It has been kept intact."); }
   }
@@ -101,11 +109,13 @@ function people(room) {
 function state(room, me) {
   return { protocol: ROOM_PROTOCOL, id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
     me: people(room).find(p => p.id === me.id), participants: people(room), presence: [...(presence.get(room.id)?.values() || [])], table: room.table,
-    ...diceState(room, me), access: room.access, leases: activeLeases(room), versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
+    ...diceState(room, me), ...playbackState(room, me), access: room.access, leases: activeLeases(room), versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
     ...(me.role === "gm" ? { invite: room.invite } : {}) };
 }
 function diceState(room, me) { return { dice: room.dice, diceAccepted: room.rollReceipts.filter(r => r.actor === me.id).map(({ id, sequence }) => ({ id, sequence })), serverTime: Date.now() }; }
 function publishDice(room) { for (const c of clients.get(room.id) || []) send(c, "dice", diceState(room, room.members.find(m => m.id === c.id))); }
+function playbackState(room, me) { return { playback: room.playback, playbackAccepted: room.playReceipts.filter(r => r.actor === me.id).map(({ id, sequence }) => ({ id, sequence })), serverTime: Date.now() }; }
+function publishPlayback(room) { for (const c of clients.get(room.id) || []) send(c, "playback", playbackState(room, room.members.find(m => m.id === c.id))); }
 function historyStatus(room, actor) {
   return { undo: room.history.some(h => h.actor === actor && !h.undone), redo: room.history.some(h => h.actor === actor && h.undone) };
 }
@@ -192,7 +202,7 @@ const server = http.createServer(async (req, res) => {
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage|profile)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage|profile|playback)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -236,6 +246,25 @@ const server = http.createServer(async (req, res) => {
       rate(req, `commands:${room.id}:${me.id}`, 1200);
       const v = await body(req);
       me = member(req, room); // Credentials may have been revoked while reading the body.
+      if (action === "playback") {
+        const request = parsePlaybackRequest(v);
+        if (!request) fail(400, "Choose a valid media control and a finite duration/position (up to seven days).");
+        const digest = hash(JSON.stringify(request)), receipt = room.playReceipts.find(r => r.id === request.id && r.actor === me.id);
+        if (receipt) {
+          if (receipt.digest !== digest) fail(409, "This playback identity has already been used for a different request.");
+          return json(res, 200, playbackState(room, me));
+        }
+        const track = room.playback.tracks.find(t => t.object === request.object);
+        if (!track || track.ref !== request.ref) fail(409, "This file was removed or replaced. Review the latest media controls.");
+        if (!canEdit(room.access, `object:${request.object}`, me.id, me.role === "gm")) fail(403, "Only the GM, owner or shared editors can control this file for the room.");
+        if (track.version !== request.version) return json(res, 409, { error: "Playback changed in another window. Review the latest controls and try again.", ...playbackState(room, me) });
+        rate(req, `playback:${room.id}:${me.id}`, 120);
+        const sequence = room.playback.sequence + 1;
+        const next = { ...room, playback: { sequence, tracks: room.playback.tracks.map(t => t.object === track.object ? changePlayback(t, request, Date.now(), sequence) : t) },
+          playReceipts: [...room.playReceipts, { id: request.id, actor: me.id, sequence, digest }].slice(-256) };
+        persist(next); Object.assign(room, next); publishPlayback(room);
+        return json(res, 200, playbackState(room, me));
+      }
       if (action === "profile") {
         const profile = identity(v);
         if (typeof v.id !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.id) || !Number.isSafeInteger(v.version) || v.version < 0) fail(400, "Invalid identity update.");

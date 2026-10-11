@@ -39,6 +39,7 @@ module.exports = async (base, api, operation, data) => {
   state = (await api(root + "/redo", gm.cookie, { id: randomUUID() })).json; assert.equal(state.table.scene.objects[0].audio, media);
   await api(root + "/access", gm.cookie, { ids: [obj.id], policy: { owner: gm.json.me.id, shared: true, editors: [] }, revision: state.revision });
   assert.equal((await upload(player.cookie)).status, 200);
+  const playback = await require("./online-playback.cjs")(api, operation, root, gm, player);
   // Hold an authenticated upload while the GM removes its participant.
   let finish;
   const pending = new Promise((resolve, reject) => {
@@ -47,11 +48,20 @@ module.exports = async (base, api, operation, data) => {
     }); req.on("error", reject); req.on("continue", () => { req.write(mp4.subarray(0, 16)); finish = () => req.end(mp4.subarray(16)); }); req.flushHeaders();
   });
   const deadline = Date.now() + 5000; while (!finish && Date.now() < deadline) await new Promise(r => setTimeout(r, 5)); assert.ok(finish);
+  let finishControl;
+  const controlBody = JSON.stringify(playback.pending);
+  const pendingControl = new Promise((resolve, reject) => {
+    const req = http.request(base + root + "/playback", { method: "POST", headers: { Cookie: player.cookie, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(controlBody) } }, res => {
+      const chunks = []; res.on("data", c => chunks.push(c)); res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(Buffer.concat(chunks)) }));
+    }); req.on("error", reject); req.write(controlBody.slice(0, 16)); finishControl = () => req.end(controlBody.slice(16));
+  });
   await api(root + "/manage", gm.cookie, { id: randomUUID(), kind: "remove", member: player.json.me.id, invite: state.invite });
   finish(); const ended = await pending; assert.equal(ended.status, 403); assert.equal(ended.json.code, "ROOM_REMOVED");
+  finishControl(); const denied = await pendingControl; assert.equal(denied.status, 403); assert.equal(denied.json.code, "ROOM_REMOVED");
   assert.equal((await read(player.cookie, { Range: "bytes=0-15" })).status, 403);
   console.log("PASS: private file media uploads, container rejection, deduplication, byte-range seeking, ownership checks, undo, removed credentials and in-progress upload revocation");
   return { async afterRestart(newBase, request) {
+    await playback.afterRestart(request);
     assert.equal((await request(root + "/state", gm.cookie)).json.table.scene.objects[0].audio, media);
     const response = await fetch(newBase + media, { headers: { Cookie: gm.cookie, Range: "bytes=0-15" } });
     assert.equal(response.status, 206); assert.deepEqual(Buffer.from(await response.arrayBuffer()), mp4.subarray(0, 16));

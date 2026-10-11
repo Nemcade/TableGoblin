@@ -2530,3 +2530,10 @@ kbd {
 .roll-actor { display: inline-flex; align-items: center; gap: 5px; color: var(--mood-muted); font-size: 10px; }
 .roll-actor i { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .roll-history .roll-actor { display: flex; margin-bottom: 3px; }
+.room-sound-enable { padding: 8px 10px; border: 1px solid var(--mood-border); border-radius: 9px; background: var(--mood-panel); color: var(--mood-ink); font-size: 11px; }
+.room-file-controls { display: grid; gap: 8px; padding: 8px 0 0; }
+.room-file-timeline { display: flex; align-items: center; gap: 8px; color: var(--mood-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.room-file-timeline input { min-width: 30px; flex: 1; accent-color: var(--mood-accent); }
+.room-file-listening { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.room-file-listening label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--mood-muted); }
+.room-file-listening input { width: 90px; accent-color: var(--mood-accent); }

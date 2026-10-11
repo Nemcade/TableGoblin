@@ -44,7 +44,7 @@ Undo becomes a request to reverse the actor's last accepted operation. It must p
 
 The server chooses shared dice results once and records participant and color-group metadata. Send one trajectory or deterministic playback package to all clients, anchored in world coordinates; clients do not reroll independently. New arrivals receive result history, not expired animations. Each participant's dice presets remain personal; applying one prepares their next throw.
 
-Artwork and audio/video files now use content-addressed files and room-authorized URLs. Portable exports embed their bytes; server backups include room records and the private asset/media directories. A server restart restores the room, files, roles, and recent rolls. Shared playback timing will build on this stored-file transport.
+Artwork and audio/video files now use content-addressed files and room-authorized URLs. Portable exports embed their bytes; server backups include room records and the private asset/media directories. A server restart restores the room, files, roles, recent rolls and playback anchors. Playback has independent versions and receipts, leaving object undo and local listening settings untouched.
 
 ## Live sources and deployment
 
@@ -59,8 +59,8 @@ Do not expose the current localhost file server as an internet session server. D
 1. **Identity and presence:** host/join screens, room credentials, remembered identity, colored lasers and selections. Test two independent browser contexts plus refresh, duplicate names, and disconnect cleanup.
 2. **Authorized shared objects:** server command validation, hierarchy ownership, drag ownership, drawing, assets, and room snapshots. Test simultaneous grabs, revoked permissions, malicious commands, parent/child policies, and server restart.
 3. **Shared utilities:** authoritative dice, host atmosphere/grid/obscure controls, personal presets, and collaboration-aware undo. Test late joining, missed events, zoom differences, and reconnect while rolling.
-4. **Uploaded media:** private audio/video storage, browser decoding, bounded uploads, range downloads, copies and portable exports. This transport is implemented; playback remains personal.
-5. **Shared playback:** authorized room play/pause/restart/seek, late-join timing and browser sound permission, with personal listening volume.
+4. **Uploaded media:** private audio/video storage, browser decoding, bounded uploads, range downloads, copies and portable exports. Implemented.
+5. **Shared playback:** authorized room play/pause/restart/seek/loop, late-join timing and browser sound permission, with personal listening volume/mute. Implemented.
 6. **Live media:** WebRTC signaling, TURN configuration, source lifecycle and sharing permissions, audio mute/monitoring, and subscription cleanup. Test OBS, screen/tab audio, reconnection, and the final viewer leaving a stream.
 7. **Internet playtest:** deploy an invitation-only room over HTTPS; test 2–6 people on different networks. Verify saved-room recovery, permission feedback, pointer latency, file media and live transport. Hosting choices can be prepared earlier; the full feature demo requires this final group test.
 

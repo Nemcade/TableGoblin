@@ -3,6 +3,7 @@ import type { TableEngine } from "./engine";
 import type { AudioSourceState } from "./audio";
 import { NumericValue } from "./NumericValue";
 import { DevicePicker } from "./DevicePicker";
+import { RoomFileControls } from "./RoomFileControls";
 
 function message(error: unknown) {
   if (error instanceof DOMException) {
@@ -340,7 +341,8 @@ export function AudioPanel({
             ×
           </button>
         </div>
-        {engine.roomActive && <p className="widget-note">Room audio files are shared. Playback, loop and volume are personal.</p>}
+        {engine.roomActive && <p className="widget-note">Playback and loop are shared. The GM, owner or shared editors control them; mute and volume are personal.</p>}
+        {engine.roomSoundNeeded && <button className="room-sound-enable" onClick={() => engine.enableRoomSound()}>Enable room sound</button>}
         <button className="audio-display" onClick={() => audioFiles.current?.click()}>＋ Audio file <span>Music, ambience, sound effects, or an audio-only MP4</span></button>
         <input ref={audioFiles} type="file" aria-label="Import audio files" accept="audio/*,.mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.webm" multiple hidden onChange={e => { void engine.addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
         {fileSources.length > 0 && <div className="audio-sources" role="region" aria-label="Audio files">
@@ -349,14 +351,15 @@ export function AudioPanel({
             return <article className="audio-source" key={file.id}>
               <div className="audio-source-heading">
                 <button className="audio-file-name" aria-label={`Locate ${name}`} onClick={() => { engine.locate(file.id); onClose(); }}><strong>{name}</strong><small>{issue ?? "Audio file · locate on table"}</small></button>
-                <button disabled={!!issue} aria-label={`${file.paused ? "Play" : "Pause"} ${name}`} onClick={() => engine.togglePlayback(file.id)}>{file.paused ? "Play" : "Pause"}</button>
+                <button disabled={!!issue || engine.roomActive && !engine.canControlPlayback(file)} aria-label={`${file.paused ? "Play" : "Pause"} ${name}`} onClick={() => engine.togglePlayback(file.id)}>{file.paused ? "Play" : "Pause"}</button>
                 <button disabled={file.locked || !editable} aria-label={`Remove ${name}`} title={file.locked ? "Unlock the object to remove" : !editable ? "Object editing permission is required" : "Remove audio file"} onClick={() => engine.delete(new Set([file.id]))}>Remove</button>
               </div>
               <div className="audio-source-controls audio-file-controls">
-                <button disabled={!!issue} onClick={() => engine.restartAudio(file.id)}>Restart</button>
-                <button aria-pressed={file.loop ?? false} onClick={() => engine.setFileAudio(file.id, { loop: !file.loop })}>Loop {file.loop ? "on" : "off"}</button>
+                <button disabled={!!issue || engine.roomActive && !engine.canControlPlayback(file)} onClick={() => engine.restartAudio(file.id)}>Restart</button>
+                <button disabled={engine.roomActive && !engine.canControlPlayback(file)} aria-pressed={file.loop ?? false} onClick={() => engine.setFileAudio(file.id, { loop: !file.loop })}>Loop {file.loop ? "on" : "off"}</button>
                 <label className="audio-volume">Volume<input aria-label={`${name} file volume`} type="range" min="0" max="100" value={(file.volume ?? .65) * 100} onChange={e => engine.setFileAudio(file.id, { volume: Number(e.target.value) / 100 })} /><span>{Math.round((file.volume ?? .65) * 100)}%</span></label>
               </div>
+              {engine.roomActive && <RoomFileControls engine={engine} object={file} />}
             </article>;
           })}
         </div>}
@@ -496,7 +499,7 @@ export function AudioPanel({
                 setSources([]);
               }}
             >
-              Stop all audio
+              {engine.roomActive ? "Mute room files for me" : "Stop all audio"}
             </button>
             <button className="primary" onClick={onClose}>
               Done

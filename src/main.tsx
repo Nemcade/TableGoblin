@@ -213,6 +213,7 @@ const defaultView: ViewState = {
   smoothing: 0.55,
   mood: defaultMood,
   audioCount: 0,
+  roomSoundNeeded: false,
   dice: {
     groups: [defaultDiceGroup()],
     activeGroup: "main",
@@ -442,6 +443,7 @@ function App() {
               />
             )}
           </div>
+          {view.roomSoundNeeded && capturePanel !== "audio" && <button className="room-sound-enable" onClick={() => engine.current?.enableRoomSound()}>Enable room sound</button>}
           <button
             className={`icon-button audio-button ${view.audioCount ? "active" : ""}`}
             onClick={() => {

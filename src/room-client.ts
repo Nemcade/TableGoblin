@@ -8,6 +8,7 @@ import type { DiceSetup } from "./dice-types";
 import type { RollArea } from "./dice-throw";
 import { roomImage, roomImageLimit } from "./room-artwork";
 import { roomMedia, roomMediaLimit, roomMediaTypes } from "./room-media";
+import { parseRoomPlayback, validPlaybackReceipts, type PlaybackRequest } from "./room-playback";
 class ArtworkRejected extends Error {}
 export type RoomStatus = "connected" | "saving" | "offline" | "update-required" | "removed";
 class RoomRequestError extends Error {
@@ -44,6 +45,9 @@ export class RoomClient {
   private rollFlight: RollRequest | null = null;
   private rollPosting = false;
   private diceClock = -Infinity;
+  private playClock = -Infinity;
+  private playFlight: PlaybackRequest | null = null;
+  private playPosting = false;
   private uploadedArtwork = new Map<string, string>();
   rejectedDraft: SharedTable | null = null;
   constructor(private engine: TableEngine, state: RoomState,
@@ -56,9 +60,15 @@ export class RoomClient {
     this.configurePermissions(false);
     engine.enterRoom(decoded.table, () => this.schedule());
     if (decoded.protocol === ROOM_PROTOCOL) this.receiveDice(decoded);
+    if (decoded.protocol === ROOM_PROTOCOL) this.receivePlayback(decoded);
     engine.setRoomDrags(this.browser, decoded.leases, ids => this.claimDrag(ids), () => queueMicrotask(() => void this.releaseIdleDrag()));
     this.source = new EventSource(`/api/rooms/${state.id}/events?client=${this.browser}`);
     this.source.addEventListener("removed", () => this.remove());
+    this.source.addEventListener("playback", e => {
+      if (this.inactive) return;
+      try { this.receivePlayback(JSON.parse((e as MessageEvent).data)); }
+      catch { this.offline(); this.error("Playback could not be read. Reconnect to reload the room controls."); }
+    });
     this.source.addEventListener("dice", e => {
       if (this.inactive) return;
       try {
@@ -119,7 +129,7 @@ export class RoomClient {
     if (this.inactive) return;
     const draft = this.engine.getRoomTable();
     if (tableChanges(this.state.table, draft).length) this.rejectedDraft = structuredClone(draft);
-    this.removed = true; this.connected = false; this.pending = false; this.rollFlight = null; this.profile = null;
+    this.removed = true; this.connected = false; this.pending = false; this.rollFlight = null; this.profile = null; this.playFlight = null;
     this.source.close(); clearInterval(this.presenceTimer); clearInterval(this.leaseTimer);
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     // Close inline typing only after preserving its latest content.
@@ -128,6 +138,7 @@ export class RoomClient {
     this.engine.setRoomHistory({ undo: false, redo: false }, () => {});
     this.engine.setRoomDrags(this.browser, []); this.engine.setRoomPresence([], [], this.state.me.id);
     this.engine.setRoomDiceSending(false);
+    this.engine.clearRoomPlayback();
     this.updateStatus();
     this.error("The GM removed you from this room. Your local table is still saved separately.");
   }
@@ -136,7 +147,7 @@ export class RoomClient {
     this.remove(); return true;
   }
   private beforeUnload = (event: BeforeUnloadEvent) => {
-    if (!this.closed && (this.rejectedDraft || this.management || this.profile || this.rollFlight || this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
+    if (!this.closed && (this.rejectedDraft || this.management || this.profile || this.rollFlight || this.playFlight || this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
       event.preventDefault(); event.returnValue = "";
     }
   };
@@ -144,6 +155,7 @@ export class RoomClient {
     const supported = !this.removed && this.state.protocol === ROOM_PROTOCOL;
     this.engine.setRoomAccess(this.state.me.id, this.state.playerEditing, this.state.access, this.state.participants, (ids, policy) => this.share(ids, policy));
     this.engine.setRoomPermissions(supported && this.state.me.role === "gm", supported, connected);
+    this.engine.roomPlaybackControl = supported ? (object, action, patch) => this.controlPlayback(object, action, patch) : null;
   }
   private receiveEvent(event: Event) {
     if (this.inactive) return;
@@ -157,6 +169,7 @@ export class RoomClient {
     if (next.protocol === ROOM_PROTOCOL) {
       this.receiveDice(next);
       if (this.state.dice.sequence > next.dice.sequence) next = { ...next, dice: this.state.dice, diceAccepted: this.state.diceAccepted };
+      if (this.state.playback.sequence > next.playback.sequence) next = { ...next, playback: this.state.playback, playbackAccepted: this.state.playbackAccepted };
     }
     if (this.inactive || next.revision < this.state.revision) return;
     if (next.protocol !== ROOM_PROTOCOL) {
@@ -189,6 +202,7 @@ export class RoomClient {
       this.engine.applyRoom(next.table);
     } else this.engine.mergeRoom(merged);
     this.state = next; this.connected = navigator.onLine;
+    this.receivePlayback(next);
     this.engine.setRoomDrags(this.browser, next.leases);
     this.engine.acknowledgeRoom(next.table);
     this.configurePermissions(this.connected);
@@ -199,6 +213,7 @@ export class RoomClient {
     if (this.rollFlight && this.connected && !this.rollPosting) void this.submitRoll();
     if (this.management && this.connected && !this.managing) void this.retryManagement();
     if (this.profile && this.connected && !this.profiling) void this.postProfile().catch(error => { if (!this.inactive) this.error(error.message); });
+    if (this.playFlight && this.connected && !this.playPosting) void this.postPlayback();
   }
   private keepDraft(message: string) {
     const draft = this.engine.getRoomTable();
@@ -288,7 +303,54 @@ export class RoomClient {
     return replacements;
   }
   private updateStatus() {
-    this.update(this.state, this.removed ? "removed" : !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight || this.management || this.profile ? "saving" : "connected");
+    this.update(this.state, this.removed ? "removed" : !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight || this.management || this.profile || this.playFlight ? "saving" : "connected");
+  }
+  private receivePlayback(value: any) {
+    if (this.inactive || this.state.protocol !== ROOM_PROTOCOL) return;
+    const playback = parseRoomPlayback(value?.playback);
+    if (!playback || !validPlaybackReceipts(value.playbackAccepted, playback.sequence) || !Number.isSafeInteger(value.serverTime) || value.serverTime < 0) throw new Error("Invalid playback state");
+    if (this.playFlight && value.playbackAccepted.some((r: any) => r.id === this.playFlight!.id)) this.playFlight = null;
+    if (playback.sequence >= this.state.playback.sequence) {
+      this.state = { ...this.state, playback, playbackAccepted: value.playbackAccepted };
+      if (value.serverTime >= this.playClock) {
+        this.playClock = value.serverTime;
+        this.engine.setRoomPlayback(playback, value.serverTime);
+      } else this.engine.setRoomPlayback(playback);
+    }
+    this.engine.roomPlaybackSending = !!this.playFlight; this.engine.refreshPlaybackUI(); this.updateStatus();
+  }
+  private controlPlayback(object: string, action: PlaybackRequest["action"], patch: { duration: number; position?: number; loop?: boolean }) {
+    if (this.inactive || !this.connected || this.playFlight) return;
+    const track = this.state.playback.tracks.find(t => t.object === object);
+    if (!track) { this.error("Wait for the file upload before controlling room playback."); return; }
+    this.playFlight = { id: crypto.randomUUID(), object, ref: track.ref, version: track.version, action, ...patch };
+    this.engine.roomPlaybackSending = true; this.engine.refreshPlaybackUI(); this.updateStatus();
+    void this.postPlayback();
+  }
+  private async postPlayback() {
+    const request = this.playFlight;
+    if (this.inactive || !this.connected || !request || this.playPosting) return;
+    this.playPosting = true;
+    try {
+      const response = await fetch(`/api/rooms/${this.state.id}/playback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request), signal: AbortSignal.timeout(15000) });
+      const result = await response.json();
+      if (this.inactive || this.checkRemoved(result)) return;
+      if (result.playback) this.receivePlayback(result);
+      if (!response.ok) {
+        if (response.status >= 500 || response.status === 429) throw new Error(result.error);
+        if (this.playFlight?.id === request.id) this.playFlight = null;
+        this.error(result.error || "Playback control was rejected.");
+        this.receiveState(await roomRequest(`/api/rooms/${this.state.id}/state`));
+      } else if (this.playFlight?.id === request.id) this.playFlight = null;
+    } catch {
+      if (!this.inactive && this.playFlight?.id === request.id) { this.offline(); this.error("Playback control is waiting for reconnection. It will retry once with the same request identity."); }
+    } finally {
+      this.playPosting = false;
+      if (!this.inactive) {
+        this.engine.roomPlaybackSending = !!this.playFlight; this.engine.refreshPlaybackUI(); this.updateStatus();
+        if (this.connected && this.playFlight && this.playFlight.id !== request.id) void this.postPlayback();
+      }
+    }
   }
   private async uploadMedia(changes: Change[]) {
     const refs = new Set(changes.filter(c => c.key.startsWith("object:")).flatMap(c => {
@@ -503,6 +565,7 @@ export class RoomClient {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
   async settle() {
+    if (this.playFlight) throw new Error("Wait for playback control to be saved, or reconnect to check it before leaving.");
     if (this.profile) throw new Error("Reconnect to check whether your identity update was saved before leaving.");
     if (this.management) throw new Error("Reconnect to check whether the room control was saved before leaving.");
     if (this.removed) return;
@@ -514,6 +577,7 @@ export class RoomClient {
     if (this.pending || !this.connected) throw new Error("The room is offline. Rejoin or export your current table before leaving.");
   }
   close() {
+    this.engine.clearRoomPlayback();
     this.closed = true; this.source.close(); clearInterval(this.presenceTimer); clearInterval(this.leaseTimer);
     if (!this.removed) void fetch(`/api/rooms/${this.state.id}/leases`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "release", client: this.browser }), keepalive: true }).catch(() => {});
     window.removeEventListener("offline", this.offline); window.removeEventListener("online", this.online);

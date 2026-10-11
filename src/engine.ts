@@ -57,6 +57,8 @@ import { emptyRoomDice, type RoomDice } from "./room-dice";
 import type { DiceSetup } from "./dice-types";
 import { roomImage, inlineRoomArtwork } from "./room-artwork";
 import { roomMedia, roomMediaLimit, inlineRoomMedia } from "./room-media";
+import { type PlaybackRequest, type RoomPlayback } from "./room-playback";
+import { RoomFilePlayer } from "./room-player";
 import {
   defaultGrid,
   defaultObscure,
@@ -82,6 +84,7 @@ export type ViewState = {
   smoothing: number;
   mood: Mood;
   audioCount: number;
+  roomSoundNeeded: boolean;
   dice: DiceState;
   grid: GridSettings;
   obscure: ObscureSettings;
@@ -204,6 +207,10 @@ export class TableEngine {
   private roomBackup: StoredTable | null = null;
   private roomAccepted: SharedTable | null = null;
   private roomChange: (() => void) | null = null;
+  roomPlaybackSending = false;
+  roomPlaybackControl: ((object: string, action: PlaybackRequest["action"], patch: { duration: number; position?: number; loop?: boolean }) => void) | null = null;
+  private roomPlayer = new RoomFilePlayer(() => queueMicrotask(() => this.emit(false)));
+  private roomPlayerTick = 0;
   private roomHistory = { undo: false, redo: false };
   private roomReverse: ((redo: boolean) => void) | null = null;
   private roomPeers: { person: Participant; presence?: Presence }[] = [];
@@ -242,6 +249,7 @@ export class TableEngine {
       const obj = this.scene.objects.find(o => o.id === id);
       if (obj) { obj.paused = true; this.emit(false); }
     });
+    this.renderer.roomTransport = (obj, media) => this.roomActive && this.roomPlayer.sync(obj, media);
     canvas.addEventListener("pointerdown", this.pointerDown);
     canvas.addEventListener("pointermove", this.pointerMove);
     canvas.addEventListener(
@@ -284,6 +292,7 @@ export class TableEngine {
   private tick = () => {
     if (this.disposed) return;
     const now = performance.now();
+    if (this.roomActive && now - this.roomPlayerTick > 250) { this.roomPlayerTick = now; this.roomPlayer.tick(); this.emit(false); }
     if (this.dice.step(now, this.camera, this.viewWidth, this.viewHeight))
       this.dirty = true;
     for (const [id, dice] of this.roomThrows) {
@@ -401,6 +410,7 @@ export class TableEngine {
       smoothing: this.smoothing,
       mood: { ...this.mood },
       audioCount: this.audio.count + this.scene.objects.filter(o => o.audio).length,
+      roomSoundNeeded: this.roomActive && this.roomPlayer.needsSound,
       dice: this.dice.state,
       grid: { ...this.grid },
       obscure: { ...this.obscure },
@@ -454,11 +464,11 @@ export class TableEngine {
   }
   private sharedScene(scene: Scene) {
     const result = clone(scene);
-    // Playback is personal in this transport stage. Listening never becomes
-    // an object command; geometry, private file references and crops are shared.
+    // Playback has its own transport. Listening never becomes an object
+    // command; geometry, private file references and crops are shared.
     for (const obj of result.objects) if (obj.video || obj.audio) {
       obj.paused = !!obj.audio; obj.loop = !!obj.video;
-      if (obj.audio) obj.volume = .65;
+      if (obj.audio) obj.volume = .65; else delete obj.volume;
     }
     return result;
   }
@@ -469,6 +479,27 @@ export class TableEngine {
     }
   }
   roomMediaBlob(ref: string) { return this.assets.get(ref); }
+  setRoomPlayback(playback: RoomPlayback, serverTime?: number) { this.roomPlayer.apply(playback, serverTime); this.roomPlayer.tick(); }
+  clearRoomPlayback() {
+    this.roomPlayer.clear(); this.roomPlayer.active = this.roomActive;
+    this.roomPlaybackSending = false; this.roomPlaybackControl = null; this.emit(false);
+  }
+  refreshPlaybackUI() { this.emit(false); }
+  enableRoomSound() { this.roomPlayer.enable(); }
+  get roomSoundNeeded() { return this.roomActive && this.roomPlayer.needsSound; }
+  roomFileMuted(obj: Surface) { return this.roomPlayer.isMuted(obj); }
+  setRoomFileMuted(obj: Surface, muted: boolean) { this.roomPlayer.mute(obj, muted); this.roomPlayer.tick(); this.emit(false); }
+  roomFilePosition(obj: Surface) { return this.roomPlayer.position(obj); }
+  fileDuration(obj: Surface) { return (obj.audio ? this.renderer.audios.get(obj.id)?.audio : this.renderer.videos.get(obj.id)?.video)?.duration ?? 0; }
+  canControlPlayback(obj: Surface) { return !!this.roomPlaybackControl && this.roomConnected && !this.roomPlaybackSending && !!this.roomFilePosition(obj) && canEdit(this.roomAccess, `object:${obj.id}`, this.roomIdentity, this.roomGM); }
+  private controlFile(obj: Surface, action: PlaybackRequest["action"], patch: { position?: number; loop?: boolean } = {}) {
+    if (!this.canControlPlayback(obj)) { this.notify("The GM, owner or shared editors can control room playback. Listening settings are personal."); return; }
+    const duration = this.fileDuration(obj);
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 604800) { this.notify("Wait for readable media with a duration of up to seven days."); return; }
+    if (action === "play" || action === "restart") this.enableRoomSound();
+    this.roomPlaybackControl?.(obj.id, action, { duration, ...patch });
+  }
+  seekRoomFile(obj: Surface, position: number) { this.controlFile(obj, "seek", { position }); }
   setRoomPermissions(gm: boolean, editable: boolean, connected: boolean) {
     this.roomGM = gm; this.roomEditable = editable; this.roomConnected = connected;
     if (!editable || !connected) { this.cancel(); if (!["select", "laser", "measure"].includes(this.tool)) this.setTool("select"); }
@@ -591,6 +622,7 @@ export class TableEngine {
     this.cleanSelection(); this.emit(false);
   }
   leaveRoom() {
+    this.roomPlayer.clear(); this.roomPlaybackControl = null; this.roomPlaybackSending = false;
     const backup = this.roomBackup;
     this.roomActive = false; this.roomId = ""; this.roomChange = null; this.roomPeers = [];
     for (const dice of this.roomThrows.values()) dice.dispose(); this.roomThrows.clear(); this.roomDiceSeen.clear();
@@ -1121,27 +1153,31 @@ export class TableEngine {
     if (!obj) return;
     const issue = obj.audio ? this.renderer.fileIssue(obj) : null;
     if (issue) { this.notify(`${obj.filename ?? obj.name}: ${issue}. Remove this object and try another file.`); return; }
+    if (this.roomActive && roomMedia(obj.audio ?? obj.video)) { this.controlFile(obj, this.roomFilePosition(obj)?.playing ? "pause" : "play"); return; }
     const before = clone(this.scene);
     obj.paused = !obj.paused;
     if (this.roomActive && (obj.audio || obj.video)) this.emit(false); else this.commit(before);
   }
   setFileAudio(id: string, patch: { volume?: number; loop?: boolean }) {
-    const obj = this.scene.objects.find(o => o.id === id && o.kind === "audio");
+    const obj = this.scene.objects.find(o => o.id === id && (o.kind === "audio" || this.roomActive && o.video));
     if (!obj) return;
+    if (this.roomActive && roomMedia(obj.audio ?? obj.video) && patch.loop !== undefined) { this.controlFile(obj, "loop", { loop: patch.loop }); return; }
     const before = clone(this.scene);
     if (patch.volume !== undefined) obj.volume = Math.max(0, Math.min(1, patch.volume));
     if (patch.loop !== undefined) obj.loop = patch.loop;
     if (this.roomActive) this.emit(false); else this.commit(before);
   }
   restartAudio(id: string) {
-    const obj = this.scene.objects.find(o => o.id === id && o.kind === "audio");
+    const obj = this.scene.objects.find(o => o.id === id && (o.kind === "audio" || this.roomActive && o.video));
     if (!obj) return;
+    if (this.roomActive && roomMedia(obj.audio ?? obj.video)) { this.controlFile(obj, "restart"); return; }
     const before = clone(this.scene), entry = this.renderer.audios.get(id);
     if (entry) entry.audio.currentTime = 0;
     obj.paused = false; if (this.roomActive) this.emit(false); else this.commit(before);
   }
   stopAllAudio() {
     this.audio.clear();
+    if (this.roomActive) { this.roomPlayer.silence(); this.roomPlayer.tick(); this.emit(false); return; }
     const before = clone(this.scene);
     for (const obj of this.scene.objects) if (obj.audio) {
       obj.paused = true;

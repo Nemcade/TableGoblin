@@ -409,6 +409,7 @@ function artwork(ctx: CanvasRenderingContext2D, obj: Surface) {
   }
 }
 export class Renderer {
+  roomTransport: ((obj: Surface, element: HTMLMediaElement) => boolean) | null = null;
   private obscureRenderer = new ObscureRenderer();
   images = new Map<string, HTMLImageElement>();
   videos = new Map<string, { url: string; video: HTMLVideoElement; timer: ReturnType<typeof setTimeout>; timedOut: boolean }>();
@@ -454,7 +455,8 @@ export class Renderer {
         entry = target;
         this.videos.set(obj.id, entry);
       }
-      if (obj.paused && !entry.video.paused) entry.video.pause();
+      if (this.roomTransport?.(obj, entry.video)) { /* Room transport owns playback. */ }
+      else if (obj.paused && !entry.video.paused) entry.video.pause();
       else if (!obj.paused && entry.video.paused && videoState(entry.video, entry.timedOut).state !== "error")
         void entry.video.play().catch(() => {});
       return videoState(entry.video, entry.timedOut).state === "ready" ? entry.video : null;
@@ -502,10 +504,11 @@ export class Renderer {
         this.changed(); this.invalidate();
       };
       audio.onloadeddata = change; audio.onerror = change;
-      audio.onended = () => { if (this.audios.get(obj.id) === target) this.audioStopped(obj.id); };
+      audio.onended = () => { if (this.audios.get(obj.id) === target && !this.roomTransport?.(obj, audio)) this.audioStopped(obj.id); };
       entry = target; this.audios.set(obj.id, entry);
     }
     entry.audio.volume = obj.volume ?? .65; entry.audio.loop = obj.loop ?? false;
+    if (this.roomTransport?.(obj, entry.audio)) return entry;
     if (obj.paused !== false) entry.audio.pause();
     else if (entry.audio.paused && !entry.starting && mediaState(entry.audio, entry.timedOut).state !== "error") {
       const target = entry;
