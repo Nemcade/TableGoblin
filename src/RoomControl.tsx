@@ -7,12 +7,15 @@ import type { RoomState } from "./room-state";
 export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine | null; ready: boolean; onStatus: (value: RoomStatus | null) => void }) {
   const [open, setOpen] = useState(false), [room, setRoom] = useState<RoomState | null>(null), [status, setStatus] = useState<RoomStatus>("offline");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [title, setTitle] = useState("Shared table"), [link, setLink] = useState("");
+  const [confirmation, setConfirmation] = useState<{ kind: "invitation" | "remove"; invite: string; member?: string; name?: string } | null>(null);
+  const [notice, setNotice] = useState("");
   const [profile, setProfile] = useState(() => {
     try { const v = JSON.parse(localStorage.getItem("table-goblin-identity") || "null"); if (typeof v?.name === "string" && /^#[a-f0-9]{6}$/i.test(v.color)) return { name: v.name, color: v.color }; } catch {}
     return { name: "", color: "#e3a069" };
   });
   const anchor = useRef<HTMLDivElement>(null), client = useRef<RoomClient | null>(null), restored = useRef("");
   const connect = (state: RoomState) => {
+    setConfirmation(null); setNotice("");
     client.current?.close();
     client.current = new RoomClient(engine!, state, (next, status) => { setRoom(next); setStatus(status); onStatus(status); }, message => { setError(message); setOpen(true); });
     setRoom(state); setStatus("offline"); onStatus("offline");
@@ -35,6 +38,7 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
     return () => { cancelled = true; window.removeEventListener("hashchange", restore); };
   }, [engine, ready]);
   useEffect(() => () => client.current?.close(), []);
+  useEffect(() => { if (!open) setConfirmation(null); }, [open]);
   useEffect(() => {
     if (!open) return;
     const close = (e: PointerEvent) => { if (!anchor.current?.contains(e.target as Node)) setOpen(false); };
@@ -42,16 +46,19 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
     document.addEventListener("pointerdown", close); window.addEventListener("keydown", key);
     return () => { document.removeEventListener("pointerdown", close); window.removeEventListener("keydown", key); };
   }, [open]);
-  const act = async (work: () => Promise<void>) => { setBusy(true); setError(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : "The room could not be opened."); } finally { setBusy(false); } };
+  const act = async (work: () => Promise<void>) => { setBusy(true); setError(""); setNotice(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : "The room could not be opened."); } finally { setBusy(false); } };
   const inviteLink = room?.invite ? `${location.origin}/#room=${room.id}&invite=${room.invite}` : "";
+  const canManage = !busy && (status === "connected" || status === "saving");
   return <div ref={anchor} className="menu-anchor room-anchor">
     <button className={`icon-button room-button ${room ? "active" : ""}`} aria-label="Online room" aria-expanded={open} onClick={() => setOpen(!open)} title={room ? room.title : "Create or join an online room"}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg><span>{room ? `${room.participants.filter(p => p.online).length} players` : "Online"}</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg><span>{status === "removed" && room ? "Access ended" : room ? `${room.participants.filter(p => p.online).length} players` : "Online"}</span>
     </button>
     {open && <section className="dropdown room-panel" aria-label="Online room controls">
       <div className="room-heading"><strong>{room ? room.title : "Online room"}</strong><button aria-label="Close room controls" onClick={() => setOpen(false)}>×</button></div>
       {error && <p className="room-error" role="alert">{error}</p>}
+      {notice && <p className="widget-note" role="status">{notice}</p>}
       {client.current?.rejectedDraft && <button className="widget-primary" onClick={() => void act(async () => { await client.current!.exportRejected(); })}>Export unsent edit</button>}
+      {status === "removed" && client.current?.rejectedDraft && <p className="widget-note">Room images can no longer be downloaded. If your edit uses them, export preserves the edits and image references as recovery data.</p>}
       {!room ? <>
         <label>Your name<input aria-label="Your player name" maxLength={32} value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} /></label>
         <ColorControl label="Presence color" value={profile.color} onChange={color => setProfile({ ...profile, color })} />
@@ -67,8 +74,17 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
         })}>Join room</button>
         <p className="widget-note">Rooms start empty. Your local table stays saved separately. Start “Open Online Table Goblin” from the project folder to try rooms.</p>
       </> : <>
-        <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : "Reconnecting…"}</small></div>
-        <div className="room-people">{room.participants.map(p => <div key={p.id}><i style={{ background: p.color, opacity: p.online ? 1 : .35 }} /><span>{p.name}</span><small>{p.role === "gm" ? "GM · " : ""}{p.online ? "online" : "offline"}</small></div>)}</div>
+        <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : status === "removed" ? "Access ended" : "Reconnecting…"}</small></div>
+        {status !== "removed" && <div className="room-people">{room.participants.map(p => <div key={p.id} data-participant={p.id}><i style={{ background: p.color, opacity: p.online ? 1 : .35 }} /><span>{p.name}</span><small>{p.role === "gm" ? "GM · " : ""}{p.online ? "online" : "offline"}</small>{room.me.role === "gm" && p.role === "player" && <button className="room-remove" aria-label={`Remove ${p.name} from room`} title={`Remove ${p.name} from room`} disabled={!canManage} onClick={() => { setError(""); setNotice(""); setConfirmation({ kind: "remove", member: p.id, name: p.name, invite: room.invite! }); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg></button>}</div>)}</div>}
+        {confirmation && <div className="room-confirm" role="group" aria-label="Confirm room access change">
+          <strong>{confirmation.kind === "remove" ? `Remove ${confirmation.name}?` : "Replace invitation?"}</strong>
+          <p>{confirmation.kind === "remove" ? "Their objects stay and become yours. Their access ends, and the invitation is replaced." : "Old invitation links stop working. Players already in the room stay connected."}</p>
+          <div className="room-actions"><button className="widget-primary" disabled={!canManage} onClick={() => void act(async () => {
+            const chosen = confirmation;
+            try { await client.current!.manage(chosen.kind, chosen.member, chosen.invite); setNotice(chosen.kind === "remove" ? `${chosen.name} removed. Invitation replaced.` : "Invitation replaced."); }
+            finally { setConfirmation(null); }
+          })}>{confirmation.kind === "remove" ? "Remove player" : "Replace link"}</button><button disabled={busy} onClick={() => setConfirmation(null)}>Cancel</button></div>
+        </div>}
         {room.me.role === "gm" ? <>
           <label className="room-permission"><input type="checkbox" aria-label="Allow players to add objects and draw" checked={room.playerEditing} disabled={busy || status === "offline" || status === "update-required"} onChange={e => {
             const enabled = e.target.checked, previous = room;
@@ -76,18 +92,18 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
             void act(async () => { try { setRoom(await client.current!.permissions(enabled)); } catch (error) { setRoom(previous); throw error; } });
           }}/><span>Allow players to add objects and draw</span></label>
           <label>Player invitation<input aria-label="Player invitation" readOnly value={inviteLink} onFocus={e => e.target.select()} /></label>
-          <button className="widget-primary" onClick={() => void act(async () => { await navigator.clipboard.writeText(inviteLink); })}>Copy invitation</button>
-        </> : <p className="widget-note">You can edit your own and shared objects.{room.playerEditing ? " You can also add objects and draw on the canvas." : " Ask the GM to enable adding objects."}</p>}
-        <p className="widget-note">Objects and dice rolls are shared. Undo reverses your own object edits. Pan, zoom, rulers, dice selections and presets are personal. The GM controls mood, grid and cover.</p>
+          <div className="room-actions"><button className="widget-primary" disabled={busy} onClick={() => void act(async () => { await navigator.clipboard.writeText(inviteLink); setNotice("Invitation copied."); })}>Copy invitation</button><button disabled={!canManage} onClick={() => { setError(""); setNotice(""); setConfirmation({ kind: "invitation", invite: room.invite! }); }}>Replace invitation</button></div>
+        </> : status !== "removed" && <p className="widget-note">You can edit your own and shared objects.{room.playerEditing ? " You can also add objects and draw on the canvas." : " Ask the GM to enable adding objects."}</p>}
+        {status !== "removed" && <p className="widget-note">Objects and dice rolls are shared. Undo reverses your own object edits. Pan, zoom, rulers, dice selections and presets are personal. The GM controls mood, grid and cover.</p>}
         {status === "offline" && <button className="widget-primary" disabled={busy} onClick={() => void act(async () => {
           await client.current!.reconnect();
         })}>Rejoin room</button>}
-        <button className="widget-primary" onClick={() => void engine?.exportTable()}>Export room table</button>
+        {status !== "removed" && <button className="widget-primary" onClick={() => void engine?.exportTable()}>Export room table</button>}
         <button disabled={busy} onClick={() => void act(async () => {
           try { await client.current!.settle(); } catch (error) { if (!window.confirm(`${error instanceof Error ? error.message : "There are unsent changes."}\nExport room table first to keep them. Leave anyway?`)) return; }
           if (client.current!.rejectedDraft && !window.confirm("There is an unsent edit available for export. Leave without exporting it?")) return;
-          client.current!.close(); client.current = null; engine!.leaveRoom(); setRoom(null); onStatus(null); history.replaceState(null, "", `${location.pathname}${location.search}`);
-        })}>Leave room · return to local table</button>
+          client.current!.close(); client.current = null; engine!.leaveRoom(); setRoom(null); setError(""); setNotice(""); setConfirmation(null); onStatus(null); history.replaceState(null, "", `${location.pathname}${location.search}`);
+        })}>{status === "removed" ? "Return to local table" : "Leave room · return to local table"}</button>
       </>}
     </section>}
   </div>;

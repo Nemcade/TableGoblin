@@ -20,6 +20,18 @@ Open **Online**, enter a name and pointer color, and create a room. Copy the pla
 
 Browser identities and GM credentials use persistent, HttpOnly cookies scoped to each room. The GM should keep their browser profile; losing its cookies loses GM access in this prototype. Invitation links grant player access, never GM access. Opening a room URL after refresh restores the same identity. Clearing the address fragment returns to the normal entry page on the next reload; the room remains on the server.
 
+## Invitations and participants
+
+The GM's **Online** popup contains **Copy invitation** and **Replace invitation**. Replacement asks for confirmation, invalidates previous invitation links, and updates the link in every connected GM tab. Players already in the room keep their identities and connections.
+
+Use the small remove button beside a player to **Remove player**. The confirmation names the person and explains the effect. Their objects, nested contents, drawings and saved dice results stay on the table; their objects and drawings become the GM's. Editor grants for that identity are cleared, including retained policies used by undo. Duplicate display names remain separate people. The GM cannot remove themselves.
+
+Removal ends every connection for that identity, clears its selection, laser and drag claims, and invalidates its session. The invitation is also replaced, preventing re-entry through an old link. You can deliberately send the new link to admit someone again with a fresh identity; they do not regain their former ownership or grants. This prototype does not provide account-based bans.
+
+The removed browser shows **Room access ended**, stops reconnecting and disables editing. **Return to local table** restores the local table saved before joining. Unsent edits remain available through **Export unsent edit**, with confirmation before leaving without them. If those edits use private room artwork, export creates recovery JSON containing the edits and image references; it cannot download files after access has ended. That recovery file is for data recovery and is not a portable table import. Export a portable room table while still connected when you need a complete offline copy.
+
+Both controls are checked by the server and persisted atomically. Recent retries use the same request identity and do not rotate a link twice. Stale confirmations are rejected. Credentials are checked again after receiving request bodies, artwork uploads and dice simulation, preventing a removed session from committing a pending edit or roll. Removal and replaced invitations survive server restart.
+
 ## What is shared
 
 - Shapes, text, raster images (PNG/JPG/WebP/GIF), artwork masks, nesting, object transforms, drawings, deletion, and locks.
@@ -66,7 +78,7 @@ Online pointer gestures commit on release, and text sessions commit when finishe
 
 Undo and Redo reverse only your own accepted operations. An unrelated edit by another participant remains intact. If the affected object or its hierarchy has changed afterward, reversal is refused with a clear explanation. Undo history and request receipts persist with the room, including through refresh and server restart. History retains at most 80 operations across the room, capped at 8 MB; the current table is always retained. A new edit clears only that participant's redo history.
 
-Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their metadata without changing contents or credentials: previously globally editable objects become shared, and otherwise belong to the GM. Updates still broadcast full authoritative snapshots with compact artwork references; broadcasting only changed entities is a future improvement. Observer roles and invite revocation are not implemented yet.
+Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their metadata without changing contents or credentials: previously globally editable objects become shared, and otherwise belong to the GM. Updates still broadcast full authoritative snapshots with compact artwork references; broadcasting only changed entities is a future improvement. Observer roles are not implemented yet.
 
 ## Host on the internet
 
@@ -81,7 +93,7 @@ The room service serves the app and API together. Deploy one instance behind HTT
 
 The included Dockerfile builds the app and bundles the server validation code, then runs the service as an unprivileged user. Mount a persistent volume at `/data`. Its production container expects HTTPS at the public reverse proxy. `GET /api/health` is the health endpoint. Room JSON files contain private invitations and credential hashes: keep them on the private volume, back them up, and never serve that directory as static content. `.gitignore` and `.dockerignore` exclude room data and environment files.
 
-Playtest limits: 1,000 objects, 8 MB per table update, 24 remembered participants, 48 event connections per room, 200 rooms per service. This is intended for a small invitation-based playtest. Public room discovery and account authentication are not included. No public deployment has been created yet.
+Playtest limits: 1,000 objects, 8 MB per table update, 24 current participants, 48 event connections per room, 200 rooms per service. Removing a player frees their participant slot. This is intended for a small invitation-based playtest. Public room discovery and account authentication are not included. No public deployment has been created yet.
 
 ## Verify
 
@@ -91,4 +103,4 @@ npm run test:online
 npm run test:browser
 ```
 
-Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI. Artwork checks cover large maps, authenticated caching, format/size/foreign-reference rejection, upload races/retries, GIF animation, masked/nested copies, portable export/import, compact operations and backed-up migration.
+Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Room controls cover confirmation/cancel, invitation rotation, duplicate names, synchronized GM tabs, transferred ownership, cleared grants, revoked connections and artwork reads, requests/uploads/dice already in progress, unsent-edit recovery, retries and restart persistence. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI. Artwork checks cover large maps, authenticated caching, format/size/foreign-reference rejection, upload races/retries, GIF animation, masked/nested copies, portable export/import, compact operations and backed-up migration.

@@ -8,7 +8,7 @@ import { emptyRoomDice, parseRoomDice, validRollReceipts, type RoomDice, type Ro
 import { roomImage } from "./room-artwork.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 5;
+export const ROOM_PROTOCOL = 6;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean };
 export type Presence = { id: string; selection: string[]; laser: Point | null };
 export type RoomState = {

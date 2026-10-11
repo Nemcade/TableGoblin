@@ -18,8 +18,8 @@ const rooms = new Map(), clients = new Map(), presence = new Map(), limits = new
 const leases = new Map();
 const maxBody = 8 * 1024 * 1024;
 fs.mkdirSync(data, { recursive: true });
-class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
-const fail = (status, message) => { throw new HttpError(status, message); };
+class HttpError extends Error { constructor(status, message, code) { super(message); this.status = status; this.code = code; } }
+const fail = (status, message, code) => { throw new HttpError(status, message, code); };
 const artwork = require("./room-assets.cjs").createAssets(data, fail);
 const json = (res, status, value) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); res.end(JSON.stringify(value)); };
 function body(req) {
@@ -59,6 +59,8 @@ function load(id) {
       // and credentials, and begin entity versioning at the saved revision.
       room.versions ??= Object.fromEntries([...room.table.scene.objects.map(o => `object:${o.id}`), ...room.table.scene.strokes.map(s => `stroke:${s.id}`), "widget:mood", "widget:grid", "widget:obscure"].map(key => [key, room.revision]));
       room.history ??= []; room.receipts ??= [];
+      room.removed ??= [];
+      if (!Array.isArray(room.removed) || room.removed.length > 256 || !room.removed.every(h => /^[a-f0-9]{64}$/.test(h))) throw new Error("Invalid removed sessions");
       if (!room.access) {
         const gm = room.members.find(m => m.role === "gm");
         if (!gm) throw new Error("Missing room owner");
@@ -83,7 +85,8 @@ function member(req, room) {
   const cookie = (req.headers.cookie || "").split(";").map(s => s.trim()).find(s => s.startsWith(`tg_${room.id}=`));
   if (!cookie) fail(401, "Join this room to continue.");
   const token = cookie.slice(cookie.indexOf("=") + 1);
-  const me = room.members.find(m => m.tokenHash === hash(token));
+  const digest = hash(token), me = room.members.find(m => m.tokenHash === digest);
+  if (!me && room.removed.includes(digest)) fail(403, "The GM removed you from this room. Your local table is still saved separately.", "ROOM_REMOVED");
   if (!me) fail(401, "Your room session is no longer valid. Join again.");
   return me;
 }
@@ -157,7 +160,9 @@ const server = http.createServer(async (req, res) => {
         if (!assetRoute[2] && req.method === "POST") {
           if (me.role !== "gm" && !room.playerEditing && !room.table.scene.objects.some(o => canEdit(room.access, `object:${o.id}`, me.id, false))) fail(403, "The GM must allow adding objects or share an editable object before you can upload artwork.");
           rate(req, `artwork:${room.id}:${me.id}`, 40);
-          return json(res, 200, { image: await artwork.upload(room.id, req) });
+          const image = await artwork.upload(room.id, req);
+          member(req, room); // Removal also invalidates uploads already in progress.
+          return json(res, 200, { image });
         }
         fail(405, "Method not allowed.");
       }
@@ -167,12 +172,12 @@ const server = http.createServer(async (req, res) => {
         if (fs.readdirSync(data).filter(f => f.endsWith(".json")).length >= 200) fail(503, "This playtest server has reached its room limit.");
         const v = await body(req), profile = identity(v), token = secret();
         const room = { id: randomBytes(8).toString("hex"), title: typeof v.title === "string" ? v.title.trim().slice(0, 60) || "Shared table" : "Shared table",
-          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), access: {}, versions: {}, history: [], receipts: [], dice: emptyRoomDice(), rollReceipts: [],
+          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), access: {}, versions: {}, history: [], receipts: [], dice: emptyRoomDice(), rollReceipts: [], removed: [],
           members: [{ id: randomUUID(), ...profile, role: "gm", tokenHash: hash(token) }] };
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -191,7 +196,7 @@ const server = http.createServer(async (req, res) => {
         }
         broadcastPeople(room); return json(res, 200, state(room, existing));
       }
-      const me = member(req, room);
+      let me = member(req, room);
       if (action === "state" && req.method === "GET") return json(res, 200, state(room, me));
       if (action === "events" && req.method === "GET") {
         const connections = clients.get(room.id) || new Set();
@@ -214,6 +219,43 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== "POST") fail(405, "Method not allowed.");
       rate(req, `commands:${room.id}:${me.id}`, 1200);
       const v = await body(req);
+      me = member(req, room); // Credentials may have been revoked while reading the body.
+      if (action === "manage") {
+        if (me.role !== "gm") fail(403, "Only the GM can replace invitations or remove participants.");
+        if (typeof v.id !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.id) || !["invitation", "remove"].includes(v.kind) || typeof v.invite !== "string" || v.invite.length > 100 ||
+          (v.kind === "remove" && typeof v.member !== "string")) fail(400, "Invalid room control request.");
+        const digest = hash(JSON.stringify({ action, value: v })), receipt = room.receipts.find(r => r.id === v.id && r.actor === me.id);
+        if (receipt) {
+          if (receipt.digest !== digest) fail(409, "This request identity has already been used for a different action.");
+          return json(res, 200, state(room, me));
+        }
+        if (hash(v.invite) !== hash(room.invite)) return json(res, 409, { error: "The invitation changed. Review the latest room controls and try again.", state: state(room, me) });
+        const target = v.kind === "remove" ? room.members.find(m => m.id === v.member) : null;
+        if (v.kind === "remove" && (!target || target.role === "gm")) fail(400, "Choose a player in this room. The GM cannot be removed.");
+        const revision = room.revision + 1, access = structuredClone(room.access), versions = { ...room.versions };
+        if (target) for (const [key, policy] of Object.entries(access)) {
+          if (policy.owner === target.id || policy.editors.includes(target.id)) {
+            if (policy.owner === target.id) policy.owner = me.id;
+            policy.editors = policy.editors.filter(id => id !== target.id);
+            versions[key] = revision;
+          }
+        }
+        const next = { ...room, revision, invite: secret(), access, versions,
+          members: target ? room.members.filter(m => m.id !== target.id) : room.members,
+          removed: target ? [...room.removed, target.tokenHash].slice(-256) : room.removed,
+          receipts: [...room.receipts, { id: v.id, actor: me.id, digest, revision }].slice(-256) };
+        persist(next); Object.assign(room, next);
+        if (target) {
+          presence.get(room.id)?.delete(target.id);
+          for (const [key, lease] of leases.get(room.id) || []) if (lease.actor === target.id) leases.get(room.id).delete(key);
+          const connections = clients.get(room.id);
+          for (const c of [...(connections || [])]) if (c.id === target.id) {
+            connections.delete(c); send(c, "removed", { message: "The GM removed you from this room. Your local table is still saved separately." }); c.res.end();
+          }
+        }
+        publishTable(room, me.id, v.id);
+        return json(res, 200, state(room, me));
+      }
       if (action === "rolls") {
         const request = parseRollRequest(v);
         if (!request) fail(400, "Choose 1–20 dice with valid colors and a table position. Results are chosen by the room server.");
@@ -232,6 +274,7 @@ const server = http.createServer(async (req, res) => {
           const seed = randomBytes(4).readUInt32LE(), record = makeRoll(request, room.table.mood, me, randomUUID(), () => randomBytes(4).readUInt32LE());
           const promise = (async () => {
             const { duration } = await diceService.simulate(diceThrow(record.dice, request.area, seed));
+            member(req, room); // A removed participant cannot commit a pending throw.
             const sequence = room.dice.sequence + 1, roll = { ...record, sequence, seed, area: request.area, duration, startedAt: Date.now() + 350 };
             const next = { ...room, dice: { sequence, rolls: [roll, ...room.dice.rolls].slice(0, 12) }, rollReceipts: [...room.rollReceipts, { id: request.id, actor: me.id, sequence, digest }].slice(-256) };
             persist(next); Object.assign(room, next); publishDice(room);
@@ -239,7 +282,7 @@ const server = http.createServer(async (req, res) => {
           pendingRolls.set(key, { digest, promise });
         }
         try { await pendingRolls.get(key).promise; }
-        catch (error) { fail(503, error.message || "The roll could not be saved. Try again."); }
+        catch (error) { if (error instanceof HttpError) throw error; fail(503, error.message || "The roll could not be saved. Try again."); }
         finally { pendingRolls.delete(key); }
         return json(res, 200, diceState(room, me));
       }
@@ -355,7 +398,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": mime[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin" });
     if (req.method === "HEAD") res.end(); else fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
   } catch (error) {
-    if (!res.headersSent) json(res, error.status || 500, { error: error.status ? error.message : "The server could not save this change. Your previous room data is intact." });
+    if (!res.headersSent) json(res, error.status || 500, { error: error.status ? error.message : "The server could not save this change. Your previous room data is intact.", ...(error.code === "ROOM_REMOVED" ? { code: error.code } : {}) });
     else res.destroy();
     if (!error.status) console.error(error);
   }
