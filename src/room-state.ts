@@ -5,9 +5,10 @@ import { defaultDiceGroup } from "./dice-types.ts";
 import type { Point, Scene } from "./model.ts";
 import { locksAllowed, validAccess, type AccessMap, type DragLease } from "./room-permissions.ts";
 import { emptyRoomDice, parseRoomDice, validRollReceipts, type RoomDice, type RollReceipt } from "./room-dice.ts";
+import { roomImage } from "./room-artwork.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 4;
+export const ROOM_PROTOCOL = 5;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean };
 export type Presence = { id: string; selection: string[]; laser: Point | null };
 export type RoomState = {
@@ -63,8 +64,8 @@ export function parseSharedTable(value: unknown): SharedTable | null {
   // Static artwork only in this first room transport. Never transmit local blob
   // addresses, capture IDs, or arbitrary external URLs to another participant.
   if (table.scene.objects.some(o => !o || typeof o !== "object" || ["camera", "screen", "video", "audio"].includes(o.kind) || o.video || o.audio || o.sourceId ||
-    (o.image && !/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(o.image)))) return null;
-  const snapshot = parseSnapshot(sharedSnapshot(table));
+    (o.image && !roomImage(o.image) && !/^data:image\/(png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(o.image)))) return null;
+  const snapshot = parseSnapshot(sharedSnapshot(table), true);
   if (!snapshot) return null;
   if (new Set(snapshot.scene.strokes.map(s => s.id)).size !== snapshot.scene.strokes.length) return null;
   return { scene: snapshot.scene, mood: snapshot.mood, grid: snapshot.grid,

@@ -20,6 +20,7 @@ const maxBody = 8 * 1024 * 1024;
 fs.mkdirSync(data, { recursive: true });
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const fail = (status, message) => { throw new HttpError(status, message); };
+const artwork = require("./room-assets.cjs").createAssets(data, fail);
 const json = (res, status, value) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); res.end(JSON.stringify(value)); };
 function body(req) {
   return new Promise((resolve, reject) => {
@@ -67,6 +68,12 @@ function load(id) {
       if (!Object.values(room.access).every(validAccess)) throw new Error("Invalid sharing data");
       room.dice ??= emptyRoomDice(); room.rollReceipts ??= [];
       if (!parseRoomDice(room.dice)) throw new Error("Invalid dice history");
+      if (artwork.migrate(room)) {
+        const backups = path.join(data, "backups"), backup = path.join(backups, `${id}.before-assets.json`);
+        fs.mkdirSync(backups, { recursive: true });
+        if (!fs.existsSync(backup)) fs.copyFileSync(path.join(data, `${id}.json`), backup, fs.constants.COPYFILE_EXCL);
+        persist(room);
+      }
       rooms.set(id, room);
     } catch (e) { fail(e.code === "ENOENT" ? 404 : 503, e.code === "ENOENT" ? "Room not found." : "This room's saved data could not be opened. It has been kept intact."); }
   }
@@ -97,7 +104,8 @@ function publishDice(room) { for (const c of clients.get(room.id) || []) send(c,
 function historyStatus(room, actor) {
   return { undo: room.history.some(h => h.actor === actor && !h.undone), redo: room.history.some(h => h.actor === actor && h.undone) };
 }
-function authorizedTable(room, me, table, changes = tableChanges(room.table, table)) {
+function authorizedTable(room, me, table, changes = tableChanges(room.table, table), restoring = false) {
+  artwork.validate(room.id, table, room.table, restoring);
   if (!editsAllowed(room.table, table, room.access, me.id, me.role === "gm", room.playerEditing)) fail(403, "This edit needs ownership or sharing permission. Locked placement and GM settings are protected.");
   if (me.role !== "gm" && changes.some(c => /^(object|stroke):/.test(c.key) && room.access[c.key] && !canEdit(room.access, c.key, me.id))) fail(403, "Only the owner or a shared editor can change this object's stacking order.");
 }
@@ -142,6 +150,17 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/")) {
       if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) fail(403, "Use this server's own room link.");
       if (req.headers["sec-fetch-site"] === "cross-site") fail(403, "Cross-site room requests are not allowed.");
+      const assetRoute = url.pathname.match(/^\/api\/rooms\/([a-f0-9]{16})\/assets(?:\/([a-f0-9]{64}\.(png|jpg|webp|gif)))?$/);
+      if (assetRoute) {
+        const room = load(assetRoute[1]), me = member(req, room);
+        if (assetRoute[2] && ["GET", "HEAD"].includes(req.method)) return artwork.serve(room.id, assetRoute[2], req, res);
+        if (!assetRoute[2] && req.method === "POST") {
+          if (me.role !== "gm" && !room.playerEditing && !room.table.scene.objects.some(o => canEdit(room.access, `object:${o.id}`, me.id, false))) fail(403, "The GM must allow adding objects or share an editable object before you can upload artwork.");
+          rate(req, `artwork:${room.id}:${me.id}`, 40);
+          return json(res, 200, { image: await artwork.upload(room.id, req) });
+        }
+        fail(405, "Method not allowed.");
+      }
       if (req.method === "POST" && !/^application\/json\b/i.test(req.headers["content-type"] || "")) fail(415, "Send a JSON request.");
       if (url.pathname === "/api/rooms" && req.method === "POST") {
         rate(req, "create", 10);
@@ -294,7 +313,7 @@ const server = http.createServer(async (req, res) => {
         });
         const table = applyChanges(room.table, operation.changes);
         if (!table || Buffer.byteLength(JSON.stringify(table)) > maxBody) fail(400, "Invalid or oversized table operation. The existing room has been kept intact.");
-        authorizedTable(room, me, table, operation.changes);
+        authorizedTable(room, me, table, operation.changes, action !== "operations");
         checkLeases(room, me, v.client, operation.changes);
         const revision = room.revision + 1, versions = advanceVersions(room.table, table, operation.changes, room.versions, revision);
         let history;

@@ -30,6 +30,18 @@ Browser identities and GM credentials use persistent, HttpOnly cookies scoped to
 
 Pan/zoom, current selection, pen preferences, rulers, preset libraries, dice selection/colors and sound preferences remain personal. Live audio/video transport is a subsequent stage. The Obscure cover remains a visual mask; room members receive the underlying content.
 
+## Room artwork
+
+Drop or paste PNG, JPG, WebP or GIF artwork as usual, or import a portable table. Artwork uploads separately and is stored once per room; objects, copies and undo history refer to its private URL. Moving a large map sends its placement and settings rather than the image bytes. GIF animation and shape masking work with these URLs.
+
+Uploads require GM access, permission to create objects, or an existing object the player can edit. Applying artwork still requires permission for the target object. Only authenticated room members can read its files; references from another room are rejected. Each file is limited to 20 MB, 64 megapixels and 16,384 pixels per dimension. A room holds at most 256 MB across 1,024 distinct artwork files. Duplicate uploads reuse the stored file.
+
+The header shows **Saving** until uploads and object edits are acknowledged. An interrupted upload keeps the pending edit for reconnect/retry. A rejected upload preserves **Export unsent edit** in Online controls while restoring the accepted room table. Wait for **Room connected** before closing the window.
+
+**Export room table** and **Export unsent edit** embed the artwork bytes, so exported files can open locally or be imported into another room. Keep the room connection available until export finishes. Copies within a room reuse its files; copying into a local table or another room embeds the source artwork before placement and needs access to the source room.
+
+The server stores files under `room-data/assets/<room-id>/`. Existing embedded artwork migrates on the room's first load after an update, including undo/redo references. An untouched copy of the original room JSON is kept under `room-data/backups/`. Room identities, permissions and revisions are preserved. Older unreadable images stay as removable placeholders. Files remain stored after an object is deleted, preserving undo and recovery; automatic removal of unused files is not implemented. The storage limit includes these retained files. Back up the entire room directory, including assets and backups.
+
 ## Shared dice
 
 Open the **Dice** widget, choose dice and color groups, then **Roll dice**. Both GM and players can roll, including players who cannot add objects. Different participants can throw simultaneously. The server chooses unbiased results once and broadcasts a deterministic physics package; viewers see matching dice positions, final faces, and colors at their own camera zoom.
@@ -54,7 +66,7 @@ Online pointer gestures commit on release, and text sessions commit when finishe
 
 Undo and Redo reverse only your own accepted operations. An unrelated edit by another participant remains intact. If the affected object or its hierarchy has changed afterward, reversal is refused with a clear explanation. Undo history and request receipts persist with the room, including through refresh and server restart. History retains at most 80 operations across the room, capped at 8 MB; the current table is always retained. A new edit clears only that participant's redo history.
 
-Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their metadata without changing contents or credentials: previously globally editable objects become shared, and otherwise belong to the GM. Updates still broadcast full authoritative snapshots; separate asset storage and compact update broadcasts are future improvements. Observer roles and invite revocation are not implemented yet.
+Reconnects reload authoritative state and rebase unrelated unsent edits. Requests whose acknowledgement was lost retain their identity and are deduplicated against the last 256 receipts. Existing prototype rooms migrate their metadata without changing contents or credentials: previously globally editable objects become shared, and otherwise belong to the GM. Updates still broadcast full authoritative snapshots with compact artwork references; broadcasting only changed entities is a future improvement. Observer roles and invite revocation are not implemented yet.
 
 ## Host on the internet
 
@@ -79,4 +91,4 @@ npm run test:online
 npm run test:browser
 ```
 
-Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI.
+Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI. Artwork checks cover large maps, authenticated caching, format/size/foreign-reference rejection, upload races/retries, GIF animation, masked/nested copies, portable export/import, compact operations and backed-up migration.

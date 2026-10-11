@@ -533,6 +533,8 @@ export class Renderer {
   }
   failedMedia(scene: Scene) { return scene.objects.filter(o => this.fileIssue(o)).map(o => ({ id: o.id, name: o.filename ?? o.name, reason: this.fileIssue(o)! })); }
   sync(scene: Scene) {
+    const images = new Set(scene.objects.map(o => o.image).filter(Boolean));
+    for (const url of this.images.keys()) if (!images.has(url)) this.images.delete(url);
     for (const obj of scene.objects) if (obj.video || obj.audio || obj.image) this.source(obj, new Map());
     for (const [id, entry] of this.videos) {
       if (!scene.objects.some((o) => o.id === id && o.video === entry.url)) {
@@ -545,7 +547,7 @@ export class Renderer {
       }
     }
     for (const [id, entry] of this.gifs) {
-      if (!scene.objects.some((o) => o.id === id)) entry.gif?.tick(true);
+      if (!scene.objects.some((o) => o.id === id && o.image === entry.url)) { entry.gif?.tick(true); this.gifs.delete(id); }
     }
   }
   dispose() {

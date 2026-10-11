@@ -1,6 +1,6 @@
 # Internet playtest plan
 
-The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication, actor-specific Undo/Redo and authoritative shared dice. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; dedicated assets and WebRTC are still future work.
+The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication, actor-specific Undo/Redo, authoritative shared dice and private artwork storage. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; shared video/audio files and WebRTC are still future work.
 
 ## First playable room
 
@@ -44,7 +44,7 @@ Undo becomes a request to reverse the actor's last accepted operation. It must p
 
 The server chooses shared dice results once and records participant and color-group metadata. Send one trajectory or deterministic playback package to all clients, anchored in world coordinates; clients do not reroll independently. New arrivals receive result history, not expired animations. Each participant's dice presets remain personal; applying one prepares their next throw.
 
-Store imported media once with stable asset IDs and room-authorized URLs. Current browser blob URLs and base64 images are local implementation details, not network IDs. Maintain durable server snapshots and a backup/export path. A server restart should restore the room, assets, roles, and recent rolls.
+Static artwork now uses content-addressed files and room-authorized URLs. Portable exports embed their bytes; server backups include room records and the private asset directory. Shared video/audio files will use a similar storage path later. A server restart restores the room, artwork, roles, and recent rolls.
 
 ## Live sources and deployment
 

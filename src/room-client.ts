@@ -1,11 +1,13 @@
 import type { TableEngine } from "./engine";
 import { ROOM_PROTOCOL, readRoomState, sharedSnapshot, type RoomState, type SharedTable } from "./room-state";
 import { tableFile } from "./table-storage";
-import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation } from "./room-operations";
+import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation, type Change } from "./room-operations";
 import { editsAllowed, hierarchy, type ObjectAccess, type DragLease } from "./room-permissions";
 import { parseRoomDice, validRollReceipts, type RollRequest } from "./room-dice";
 import type { DiceSetup } from "./dice-types";
 import type { RollArea } from "./dice-throw";
+import { roomImage, roomImageLimit } from "./room-artwork";
+class ArtworkRejected extends Error {}
 export type RoomStatus = "connected" | "saving" | "offline" | "update-required";
 export class RoomClient {
   state: RoomState;
@@ -30,6 +32,7 @@ export class RoomClient {
   private rollFlight: RollRequest | null = null;
   private rollPosting = false;
   private diceClock = -Infinity;
+  private uploadedArtwork = new Map<string, string>();
   rejectedDraft: SharedTable | null = null;
   constructor(private engine: TableEngine, state: RoomState,
     private update: (state: RoomState, status: RoomStatus) => void,
@@ -37,6 +40,7 @@ export class RoomClient {
     const decoded = readRoomState(state);
     if (!decoded) throw new Error("The room server sent an invalid room. Your local table has been kept intact.");
     this.state = decoded;
+    engine.roomId = decoded.id;
     this.configurePermissions(false);
     engine.enterRoom(decoded.table, () => this.schedule());
     if (decoded.protocol === ROOM_PROTOCOL) this.receiveDice(decoded);
@@ -166,13 +170,23 @@ export class RoomClient {
     // Pointer gestures and inline text sessions commit when finished. A remote
     // event must not turn their intermediate state into a durable operation.
     if (this.engine.gesture || this.engine.editingId || this.leasePending) { this.schedule(); return; }
-    const changes = tableChanges(this.state.table, this.engine.getRoomTable());
+    let changes = tableChanges(this.state.table, this.engine.getRoomTable());
     this.pending = false;
     if (!this.flight && !changes.length) { this.updateStatus(); void this.releaseIdleDrag(); return; }
-    if (!this.flight) this.flight = { operation: { id: crypto.randomUUID(), changes, expected: expectations(this.state.table, changes, this.state.versions) }, acknowledged: false };
-    if (this.flight.acknowledged) { this.flight = null; if (changes.length) this.schedule(); else this.updateStatus(); return; }
+    if (this.flight?.acknowledged) { this.flight = null; if (changes.length) this.schedule(); else this.updateStatus(); return; }
     this.inFlight = true; this.update(this.state, "saving");
     try {
+      if (!this.flight) {
+        const images = await this.uploadArtwork(changes);
+        if (this.closed) return;
+        this.engine.replaceRoomArtwork(images);
+        if (!this.connected || this.engine.gesture || this.engine.editingId || this.leasePending) { this.pending = true; return; }
+        // A remote edit may have arrived while the image was uploading. Build
+        // the operation against the rebased table, never the pre-upload snapshot.
+        changes = tableChanges(this.state.table, this.engine.getRoomTable());
+        if (!changes.length) return;
+        this.flight = { operation: { id: crypto.randomUUID(), changes, expected: expectations(this.state.table, changes, this.state.versions) }, acknowledged: false };
+      }
       const response = await fetch(`/api/rooms/${this.state.id}/operations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...this.flight.operation, client: this.browser }), signal: AbortSignal.timeout(15000) });
       const result = await response.json();
       if (this.closed) return;
@@ -185,12 +199,37 @@ export class RoomClient {
       } else this.receiveState(result);
       this.flight = null;
       if (tableChanges(this.state.table, this.engine.getRoomTable()).length) this.pending = true;
-    } catch {
-      if (!this.closed) { this.pending = true; this.connected = false; this.error("The connection was interrupted. Your edit remains in this window. Reconnect or export it before leaving."); }
+    } catch (error) {
+      if (!this.closed && error instanceof ArtworkRejected) {
+        this.keepDraft(error.message); this.flight = null; this.engine.applyRoom(this.state.table);
+      } else if (!this.closed) { this.pending = true; this.connected = false; this.error("The connection was interrupted. Your edit remains in this window. Reconnect or export it before leaving."); }
     } finally {
       this.inFlight = false;
       if (!this.closed) { this.configurePermissions(this.connected); this.updateStatus(); if (this.pending && this.connected) this.schedule(); void this.releaseIdleDrag(); }
     }
+  }
+  private async uploadArtwork(changes: Change[]) {
+    const images = new Set(changes.filter(c => c.key.startsWith("object:") && (c.value as import("./model").Surface | null)?.image !== this.state.table.scene.objects.find(o => o.id === c.key.slice(7))?.image)
+      .map(c => (c.value as import("./model").Surface | null)?.image).filter((image): image is string => !!image?.startsWith("data:image/")));
+    const replacements = new Map<string, string>();
+    for (const image of images) {
+      const blob = await (await fetch(image)).blob();
+      if (blob.size > roomImageLimit) throw new ArtworkRejected("This image exceeds the 20 MB room artwork limit. Your unsent table can be exported.");
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())), n => n.toString(16).padStart(2, "0")).join("");
+      let url = this.uploadedArtwork.get(digest);
+      if (!url) {
+        const response = await fetch(`/api/rooms/${this.state.id}/assets`, { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: AbortSignal.timeout(60000) });
+        const result = await response.json();
+        if (!response.ok) {
+          if (response.status < 500 && response.status !== 429) throw new ArtworkRejected((result.error || "The artwork was rejected.") + " Your unsent table can be exported.");
+          throw new Error(result.error || "Artwork upload interrupted.");
+        }
+        if (roomImage(result.image)?.room !== this.state.id) throw new Error("Invalid artwork response.");
+        url = result.image as string; this.uploadedArtwork.set(digest, url);
+      }
+      replacements.set(image, url);
+    }
+    return replacements;
   }
   private updateStatus() {
     this.update(this.state, !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight ? "saving" : "connected");

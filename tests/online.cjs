@@ -219,7 +219,7 @@ async function browserTests() {
       window.dispatchEvent(new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true }));
     });
     const art = await waitState(player, state => state.table.scene.objects.some(o => o.image));
-    assert.match(art.table.scene.objects.find(o => o.image).image, /^data:image\/png;base64,/);
+    assert.match(art.table.scene.objects.find(o => o.image).image, /^\/api\/rooms\/[a-f0-9]{16}\/assets\/[a-f0-9]{64}\.png$/);
     await gm.getByRole("button", { name: "Add", exact: true }).click();
     await gm.getByRole("button", { name: "Text Notes, labels and annotations", exact: true }).click();
     await gm.getByRole("textbox", { name: "Text content", exact: true }).fill("Shared note");
@@ -265,6 +265,7 @@ async function browserTests() {
   const operations = await operationTests();
   const ownership = await require("./online-access.cjs")(api, operation, base);
   const dice = await require("./online-dice.cjs")(api, operation);
+  const assets = await require("./online-assets.cjs")(base, api, operation, data);
   console.log("PASS: server-chosen grouped/color dice, simultaneous rolls, in-flight and persisted deduplication, forged request rejection and independent table undo");
   console.log("PASS: object ownership, specific editors, protected groups, independent tokens on locked maps, creation grants, sharing revocation, drag races, renew/release/disconnect/expiry and forged lease requests");
   console.log("PASS: concurrent independent commands, per-entity and ABA conflicts, forged dependencies, permission revocation, actor undo/redo and idempotent retries");
@@ -283,11 +284,13 @@ async function browserTests() {
   assert.deepEqual(restored.json.dice, { sequence: 0, rolls: [] });
   assert.deepEqual((await api(dice.root + "/state", dice.player)).json.dice, dice.dice);
   assert.equal((await api(dice.root + "/rolls", dice.gm, dice.first)).json.dice.sequence, 2);
+  await assets.afterRestart(base, api);
   console.log("PASS: server restart restores room contents, permissions, participant roles and reconnect credentials");
   browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   await browserTests();
   console.log("PASS: two-browser room creation/join, shared transforms/artwork/text/dice widget, refresh during a throw, personal dice preferences, colored presence, editing permissions, refresh identity, network reconnect and untouched local table");
   await require("./online-sync.cjs")(browser, base);
   await require("./online-dice-browser.cjs")(browser, base);
+  await require("./online-assets-browser.cjs")(browser, base);
   await require("./online-compat.cjs")(browser, base);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => { await browser?.close(); await stop(); });

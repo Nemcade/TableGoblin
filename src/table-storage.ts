@@ -4,6 +4,7 @@ import type { DiceSetup, RollRecord } from "./dice-types";
 import type { GridSettings, ObscureSettings, Measurement } from "./table-widgets";
 import { parseDiceSetup, parseGrid, parseMood } from "./presets.ts";
 import { validText } from "./text.ts";
+import { roomImage, inlineRoomArtwork } from "./room-artwork.ts";
 
 export type SaveStatus = "memory" | "loading" | "saving" | "saved" | "error";
 export type TableSnapshot = {
@@ -23,7 +24,7 @@ const finite = (n: unknown): n is number => typeof n === "number" && Number.isFi
 const text = (s: unknown, max = 128): s is string => typeof s === "string" && s.length <= max;
 const point = (p: unknown): p is Point => record(p) && finite(p.x) && finite(p.y);
 const strokes = (v: unknown): v is Stroke[] => Array.isArray(v) && v.length <= 50000 && v.every((s) => record(s) && text(s.id) && text(s.color) && finite(s.width) && s.width > 0 && typeof s.highlight === "boolean" && Array.isArray(s.points) && s.points.length <= 1000000 && s.points.every(point));
-export function sceneIssue(v: unknown): string | null {
+export function sceneIssue(v: unknown, allowRoomArtwork = false): string | null {
   if (!record(v) || !Array.isArray(v.objects) || v.objects.length > 5000) return "The object list is invalid.";
   if (!strokes(v.strokes)) return "The table drawings are invalid.";
   const ids = new Set<string>();
@@ -36,7 +37,7 @@ export function sceneIssue(v: unknown): string | null {
     if (!strokes(o.strokes)) return `${label} has invalid drawings.`;
     if (o.parentId !== null && !text(o.parentId)) return `${label} has an invalid parent.`;
     if (o.shape !== undefined && !["rectangle", "rounded", "circle", "triangle", "hexagon", "diamond"].includes(o.shape)) return `${label} has an invalid shape.`;
-    if (o.image !== undefined && (typeof o.image !== "string" || !o.image.startsWith("data:image/"))) return `${label} has invalid image data.`;
+    if (o.image !== undefined && (typeof o.image !== "string" || !o.image.startsWith("data:image/") && !(allowRoomArtwork && roomImage(o.image)))) return `${label} has invalid image data.`;
     if (o.video !== undefined && (typeof o.video !== "string" || !o.video.startsWith("asset:"))) return `${label} has an invalid video reference.`;
     if (o.audio !== undefined && (typeof o.audio !== "string" || !o.audio.startsWith("asset:"))) return `${label} has an invalid audio reference.`;
     if (o.filename !== undefined && !text(o.filename, 1024)) return `${label} has an invalid filename.`;
@@ -61,9 +62,9 @@ export function sceneIssue(v: unknown): string | null {
 export function parseScene(v: unknown): Scene | null {
   return sceneIssue(v) ? null : structuredClone(v) as Scene;
 }
-export function snapshotIssue(v: unknown): string | null {
+export function snapshotIssue(v: unknown, allowRoomArtwork = false): string | null {
   if (!record(v) || v.version !== 1) return "The table format is unsupported.";
-  const issue = sceneIssue(v.scene);
+  const issue = sceneIssue(v.scene, allowRoomArtwork);
   if (issue) return issue;
   if (!parseMood(v.mood)) return "The theme settings are invalid.";
   if (!parseDiceSetup(v.dice)) return "The dice setup is invalid.";
@@ -79,8 +80,8 @@ export function snapshotIssue(v: unknown): string | null {
   if (v.obscure.gmOpacity !== undefined && (!finite(v.obscure.gmOpacity) || v.obscure.gmOpacity < 0 || v.obscure.gmOpacity > 1)) return "The GM cover opacity is invalid.";
   return null;
 }
-export function parseSnapshot(v: unknown): TableSnapshot | null {
-  return snapshotIssue(v) ? null : structuredClone(v) as TableSnapshot;
+export function parseSnapshot(v: unknown, allowRoomArtwork = false): TableSnapshot | null {
+  return snapshotIssue(v, allowRoomArtwork) ? null : structuredClone(v) as TableSnapshot;
 }
 
 export function storedIssue(v: unknown): string | null {
@@ -200,10 +201,12 @@ export class LocalTableStore {
 }
 
 export async function tableFile(stored: StoredTable): Promise<string> {
+  const snapshot = structuredClone(stored.snapshot);
+  snapshot.scene.objects = await inlineRoomArtwork(snapshot.scene.objects);
   const assets = await Promise.all(stored.assets.map(async ({ key, blob }) => ({ key, data: await new Promise<string>((resolve, reject) => {
     const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob);
   }) })));
-  return JSON.stringify({ app: "table-goblin", version: 1, snapshot: stored.snapshot, assets });
+  return JSON.stringify({ app: "table-goblin", version: 1, snapshot, assets });
 }
 /** Export rejected data without validating, repairing, or replacing the original. */
 export async function recoveryFile(original: unknown): Promise<string> {

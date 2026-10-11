@@ -54,6 +54,7 @@ import { TableDice, type DiceState } from "./dice";
 import { diceArea, type RollArea } from "./dice-throw";
 import { emptyRoomDice, type RoomDice } from "./room-dice";
 import type { DiceSetup } from "./dice-types";
+import { roomImage, inlineRoomArtwork } from "./room-artwork";
 import {
   defaultGrid,
   defaultObscure,
@@ -177,6 +178,7 @@ export class TableEngine {
   private surfaceColors = new Map<string, string>();
   private textColors = new Map<string, string | null>();
   roomActive = false;
+  roomId = "";
   roomEditable = true;
   roomGM = true;
   roomConnected = true;
@@ -528,6 +530,15 @@ export class TableEngine {
     this.cleanSelection(); this.emit(false);
   }
   acknowledgeRoom(table: SharedTable) { this.roomAccepted = structuredClone(table); }
+  replaceRoomArtwork(images: Map<string, string>) {
+    const replace = (scene: Scene) => {
+      for (const object of scene.objects) if (object.image && images.has(object.image)) object.image = images.get(object.image)!;
+    };
+    replace(this.scene);
+    if (this.gesture && "before" in this.gesture) replace(this.gesture.before);
+    if (this.textBefore) replace(this.textBefore);
+    if (images.size) this.emit(false);
+  }
   setRoomHistory(history: { undo: boolean; redo: boolean }, reverse: (redo: boolean) => void) {
     this.roomHistory = { undo: history?.undo === true, redo: history?.redo === true }; this.roomReverse = reverse; this.emit(false);
   }
@@ -559,7 +570,7 @@ export class TableEngine {
   }
   leaveRoom() {
     const backup = this.roomBackup;
-    this.roomActive = false; this.roomChange = null; this.roomPeers = [];
+    this.roomActive = false; this.roomId = ""; this.roomChange = null; this.roomPeers = [];
     for (const dice of this.roomThrows.values()) dice.dispose(); this.roomThrows.clear(); this.roomDiceSeen.clear();
     this.roomDice = emptyRoomDice(); this.roomDiceSending = false; this.roomDiceNextFinish = Infinity; this.roomRoll = null;
     this.dice.state = { ...this.dice.state, shared: false, sharedRolling: false, currentRoll: undefined, rolling: false };
@@ -770,7 +781,7 @@ export class TableEngine {
       this.scene = before; this.cleanSelection(); this.emit(false);
       this.notify("Rooms currently support shapes, text, drawings and PNG/JPG/WebP/GIF images. Video and audio sharing will follow."); return;
     }
-    if (JSON.stringify(before) !== JSON.stringify(this.scene)) {
+    if (!this.roomActive && JSON.stringify(before) !== JSON.stringify(this.scene)) {
       this.undoStack.push(before);
       if (this.undoStack.length > 80) this.undoStack.shift();
       this.redoStack = [];
@@ -2213,13 +2224,25 @@ export class TableEngine {
         const content = JSON.parse(data.slice(prefix[0].length)) as Surface[];
         if (!validClipboard(content)) throw new Error("Invalid clipboard");
         e.preventDefault();
-        this.placeCopies(content);
-        this.notify("Copied surfaces placed, with everything resting on them.");
+        if (content.some(o => roomImage(o.image))) void this.pasteRoomArtwork(content);
+        else { this.placeCopies(content); this.notify("Copied surfaces placed, with everything resting on them."); }
       } catch {
         this.notify("Could not read these copied surfaces.");
       }
     }
   };
+  private async pasteRoomArtwork(content: Surface[]) {
+    const active = this.roomActive, room = this.roomId;
+    try {
+      if (active && content.every(o => !roomImage(o.image) || roomImage(o.image)!.room === room)) {
+        this.placeCopies(content); this.notify("Copied surfaces placed, with everything resting on them."); return;
+      }
+      // Materialize private URLs when copying between rooms or into a local table.
+      const objects = await inlineRoomArtwork(content);
+      if (this.disposed || active !== this.roomActive || room !== this.roomId) return;
+      this.placeCopies(objects); this.notify("Copied surfaces placed, with everything resting on them.");
+    } catch (error) { this.notify(error instanceof Error ? error.message : "Could not copy this room artwork."); }
+  }
   private copy = (e: ClipboardEvent) => {
     if (editing(e.target) || this.editingId || !this.selection.size) return;
     const content = copyHierarchy(this.scene, this.selection);
@@ -2361,7 +2384,7 @@ function validClipboard(value: unknown): value is Surface[] {
     }
     if (
       o.image &&
-      (typeof o.image !== "string" || !o.image.startsWith("data:image/"))
+      (typeof o.image !== "string" || !o.image.startsWith("data:image/") && !roomImage(o.image))
     )
       return false;
     if (
