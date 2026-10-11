@@ -2,15 +2,19 @@ import { parseSnapshot, type TableSnapshot } from "./table-storage.ts";
 import { defaultMood } from "./mood.ts";
 import { defaultGrid, defaultObscure } from "./table-widgets.ts";
 import { defaultDiceGroup } from "./dice-types.ts";
-import type { Point, Scene } from "./model.ts";
+import type { Scene } from "./model.ts";
+import { validPresence, type Presence } from "./room-presence.ts";
+export { validPresence } from "./room-presence.ts";
+export type { Presence } from "./room-presence.ts";
 import { locksAllowed, validAccess, type AccessMap, type DragLease } from "./room-permissions.ts";
 import { emptyRoomDice, parseRoomDice, validRollReceipts, type RoomDice, type RollReceipt } from "./room-dice.ts";
 import { roomImage } from "./room-artwork.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 6;
-export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean };
-export type Presence = { id: string; selection: string[]; laser: Point | null };
+export const ROOM_PROTOCOL = 7;
+export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean; profileVersion?: number };
+export const validParticipant = (p: any): p is Participant => p && typeof p.id === "string" && typeof p.name === "string" && /^#[0-9a-f]{6}$/i.test(p.color) && ["gm", "player"].includes(p.role) && typeof p.online === "boolean" &&
+  (p.profileVersion === undefined || Number.isSafeInteger(p.profileVersion) && p.profileVersion >= 0);
 export type RoomState = {
   protocol: number;
   id: string; title: string; revision: number; playerEditing: boolean;
@@ -27,9 +31,8 @@ export function readRoomState(value: unknown, previous?: RoomState): RoomState |
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   let v = value as Record<string, any>;
   if (v.id === undefined && previous?.protocol === 0) v = { ...previous, table: v.table, revision: v.revision };
-  const participant = (p: any) => p && typeof p.id === "string" && typeof p.name === "string" && /^#[0-9a-f]{6}$/i.test(p.color) && ["gm", "player"].includes(p.role) && typeof p.online === "boolean";
   if (!/^[a-z0-9]{16}$/.test(v.id) || typeof v.title !== "string" || !Number.isSafeInteger(v.revision) || v.revision < 0 || typeof v.playerEditing !== "boolean" ||
-    !participant(v.me) || !Array.isArray(v.participants) || !v.participants.every(participant) || !Array.isArray(v.presence)) return null;
+    !validParticipant(v.me) || !Array.isArray(v.participants) || !v.participants.every(validParticipant) || !Array.isArray(v.presence) || !v.presence.every((p: any) => typeof p?.id === "string" && validPresence(p))) return null;
   const table = parseSharedTable(v.table);
   if (!table) return null;
   const metadata = v.history && typeof v.history.undo === "boolean" && typeof v.history.redo === "boolean" &&

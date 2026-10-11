@@ -1,5 +1,5 @@
 import type { TableEngine } from "./engine";
-import { ROOM_PROTOCOL, readRoomState, sharedSnapshot, type RoomState, type SharedTable } from "./room-state";
+import { ROOM_PROTOCOL, readRoomState, sharedSnapshot, validParticipant, validPresence, type RoomState, type SharedTable } from "./room-state";
 import { recoveryFile, tableFile } from "./table-storage";
 import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation, type Change } from "./room-operations";
 import { editsAllowed, hierarchy, type ObjectAccess, type DragLease } from "./room-permissions";
@@ -13,6 +13,7 @@ class RoomRequestError extends Error {
   constructor(message: string, readonly code?: string) { super(message); }
 }
 type ManagementRequest = { id: string; kind: "invitation" | "remove"; invite: string; member?: string };
+type ProfileRequest = { id: string; name: string; color: string; version: number };
 export class RoomClient {
   state: RoomState;
   private source: EventSource;
@@ -25,6 +26,8 @@ export class RoomClient {
   private removed = false;
   private management: ManagementRequest | null = null;
   private managing = false;
+  private profile: ProfileRequest | null = null;
+  private profiling = false;
   private get inactive() { return this.closed || this.removed; }
   private flight: { operation: RoomOperation; acknowledged: boolean } | null = null;
   private reversing: { id: string; redo: boolean } | null = null;
@@ -75,10 +78,13 @@ export class RoomClient {
     });
     this.source.addEventListener("presence", e => {
       if (this.inactive) return;
-      const next = JSON.parse((e as MessageEvent).data);
-      this.state = { ...this.state, ...next };
-      engine.setRoomPresence(next.participants, next.presence, this.state.me.id);
-      this.updateStatus();
+      try {
+        const next = JSON.parse((e as MessageEvent).data);
+        if (!Array.isArray(next.participants) || !next.participants.every(validParticipant) || !Array.isArray(next.presence) || !next.presence.every((p: any) => typeof p?.id === "string" && validPresence(p))) throw new Error("Invalid presence");
+        this.state = { ...this.state, participants: next.participants, presence: next.presence };
+        engine.setRoomPresence(next.participants, next.presence, this.state.me.id);
+        this.updateStatus();
+      } catch { this.offline(); this.error("The participant update could not be read. Reconnect to load the room."); }
     });
     this.source.onerror = () => {
       this.offline();
@@ -112,7 +118,7 @@ export class RoomClient {
     if (this.inactive) return;
     const draft = this.engine.getRoomTable();
     if (tableChanges(this.state.table, draft).length) this.rejectedDraft = structuredClone(draft);
-    this.removed = true; this.connected = false; this.pending = false; this.rollFlight = null;
+    this.removed = true; this.connected = false; this.pending = false; this.rollFlight = null; this.profile = null;
     this.source.close(); clearInterval(this.presenceTimer); clearInterval(this.leaseTimer);
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     // Close inline typing only after preserving its latest content.
@@ -129,7 +135,7 @@ export class RoomClient {
     this.remove(); return true;
   }
   private beforeUnload = (event: BeforeUnloadEvent) => {
-    if (!this.closed && (this.rejectedDraft || this.management || this.rollFlight || this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
+    if (!this.closed && (this.rejectedDraft || this.management || this.profile || this.rollFlight || this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
       event.preventDefault(); event.returnValue = "";
     }
   };
@@ -163,6 +169,7 @@ export class RoomClient {
     }
     if (this.reversing && next.accepted.some(r => r.id === this.reversing!.id)) this.reversing = null;
     if (this.management && next.accepted.some(r => r.id === this.management!.id)) this.management = null;
+    if (this.profile && next.accepted.some(r => r.id === this.profile!.id)) this.profile = null;
     let base = this.state.table, versions = this.state.versions;
     const receipt = this.flight && next.accepted.find(r => r.id === this.flight!.operation.id);
     if (receipt && this.flight && !this.flight.acknowledged) {
@@ -190,6 +197,7 @@ export class RoomClient {
     if (this.pending && this.connected && !this.inFlight) this.schedule();
     if (this.rollFlight && this.connected && !this.rollPosting) void this.submitRoll();
     if (this.management && this.connected && !this.managing) void this.retryManagement();
+    if (this.profile && this.connected && !this.profiling) void this.postProfile().catch(error => { if (!this.inactive) this.error(error.message); });
   }
   private keepDraft(message: string) {
     const draft = this.engine.getRoomTable();
@@ -277,7 +285,7 @@ export class RoomClient {
     return replacements;
   }
   private updateStatus() {
-    this.update(this.state, this.removed ? "removed" : !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight || this.management ? "saving" : "connected");
+    this.update(this.state, this.removed ? "removed" : !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight || this.management || this.profile ? "saving" : "connected");
   }
   private receiveDice(value: unknown) {
     if (this.inactive || this.state.protocol !== ROOM_PROTOCOL) return;
@@ -319,6 +327,36 @@ export class RoomClient {
     if (this.management && (this.management.kind !== kind || this.management.member !== member)) throw new Error("Reconnect to check the previous room control before starting another.");
     this.management ??= { id: crypto.randomUUID(), kind, member, invite };
     await this.postManagement();
+  }
+  async updateProfile(name: string, color: string, version: number) {
+    if (this.inactive || !this.connected || this.state.protocol !== ROOM_PROTOCOL) throw new Error("Reconnect before editing your identity.");
+    if (this.profiling) throw new Error("Wait for your identity to finish saving.");
+    if (this.profile && (this.profile.name !== name || this.profile.color !== color)) throw new Error("Reconnect to check your previous identity update before changing it again.");
+    this.profile ??= { id: crypto.randomUUID(), name, color, version };
+    await this.postProfile();
+  }
+  private async postProfile() {
+    if (!this.profile || this.profiling || this.inactive) return;
+    const request = this.profile; this.profiling = true; this.updateStatus();
+    try {
+      const response = await fetch(`/api/rooms/${this.state.id}/profile`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request), signal: AbortSignal.timeout(15000) });
+      const result = await response.json();
+      if (this.inactive || this.checkRemoved(result)) return;
+      if (!response.ok) {
+        if (this.profile?.id === request.id) this.profile = null;
+        if (result.state) this.receiveState(result.state);
+        throw new RoomRequestError(result.error || "Your identity update was rejected.");
+      }
+      // SSE may already have acknowledged this profile and delivered newer
+      // transient views. A late HTTP copy must not rewind that presence.
+      if (!this.state.accepted.some(receipt => receipt.id === request.id)) this.receiveState(result);
+    } catch (error) {
+      if (this.state.accepted.some(receipt => receipt.id === request.id)) return;
+      if (!this.inactive && !(error instanceof RoomRequestError) && this.profile?.id === request.id) {
+        this.offline(); throw new Error("The identity connection was interrupted. Rejoin to check it; retrying will not save it twice.");
+      }
+      throw error;
+    } finally { this.profiling = false; if (!this.inactive) this.updateStatus(); }
   }
   private async retryManagement() {
     try { await this.postManagement(); } catch (error) { if (!this.inactive) this.error(error instanceof Error ? error.message : "Room controls could not be saved."); }
@@ -431,6 +469,7 @@ export class RoomClient {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
   async settle() {
+    if (this.profile) throw new Error("Reconnect to check whether your identity update was saved before leaving.");
     if (this.management) throw new Error("Reconnect to check whether the room control was saved before leaving.");
     if (this.removed) return;
     if (this.rollFlight) throw new Error("Wait for the dice roll to be saved, or reconnect to check its result before leaving.");

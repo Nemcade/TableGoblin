@@ -96,8 +96,9 @@ export function ColorControl({
         onBlur={commit}
         onKeyDown={(e) => {
           e.stopPropagation();
-          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
           if (e.key === "Escape") {
+            e.preventDefault();
             cancelled.current = true;
             e.currentTarget.blur();
           }

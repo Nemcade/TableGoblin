@@ -17,6 +17,8 @@ test("room decoding preserves old-server tables without inventing writable metad
   assert.equal(readRoomState({ ...current, protocol: 2, access: undefined, leases: undefined })!.protocol, 2);
   assert.equal(readRoomState({ ...current, protocol: 3, dice: undefined, diceAccepted: undefined, serverTime: undefined })!.protocol, 3);
   assert.equal(readRoomState(current)!.protocol, ROOM_PROTOCOL);
+  assert.equal(readRoomState({ ...current, me: { ...me, profileVersion: -1 } }), null);
+  assert.equal(readRoomState({ ...current, presence: [{ id: me.id, selection: [], laser: null, view: { x: 0, y: 0, width: 0, height: 100 } }] }), null);
   assert.equal(readRoomState({ ...current, history: undefined }), null, "A malformed current server cannot silently bypass metadata checks");
   assert.equal(readRoomState({ revision: 2, table: moved }, readRoomState(current)!), null);
   assert.equal(readRoomState({ ...old, table: { scene: { objects: [null] } } }), null);

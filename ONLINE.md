@@ -42,6 +42,14 @@ Both controls are checked by the server and persisted atomically. Recent retries
 
 Pan/zoom, current selection, pen preferences, rulers, preset libraries, dice selection/colors and sound preferences remain personal. Live audio/video transport is a subsequent stage. The Obscure cover remains a visual mask; room members receive the underlying content.
 
+## Identity and finding each other
+
+In **Online**, the pencil beside your name opens a compact name and pointer-color editor. **Save identity** updates your selection labels, lasers and participant entry for everyone. **Cancel** discards the draft. Your identity, GM/player role, ownership, sharing grants and object undo history stay the same. Previously saved dice results retain the name recorded for that throw. The updated profile survives refresh and server restart and becomes the suggested identity for future rooms.
+
+If another tab changes your identity while the editor is open, saving asks you to review the current name and color instead of silently overwriting them. Your draft remains available; save again to deliberately replace the newer values, or cancel. Interrupted requests retry with the original request identity, preventing duplicate saves.
+
+Use the crosshair beside another connected person to **Go to their view**. This centers their visible world area in your own window, fitting its different aspect ratio within the normal zoom limits. The popup closes and you can immediately pan or zoom independently. It never moves anyone else's camera or follows their later movements. Finish an active gesture or text edit first. Camera positions are transient presence data, not saved table contents; returning to your local table restores its original camera. With multiple tabs for one identity, the most recently updated view represents that person.
+
 ## Room artwork
 
 Drop or paste PNG, JPG, WebP or GIF artwork as usual, or import a portable table. Artwork uploads separately and is stored once per room; objects, copies and undo history refer to its private URL. Moving a large map sends its placement and settings rather than the image bytes. GIF animation and shape masking work with these URLs.
@@ -104,3 +112,5 @@ npm run test:browser
 ```
 
 Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Room controls cover confirmation/cancel, invitation rotation, duplicate names, synchronized GM tabs, transferred ownership, cleared grants, revoked connections and artwork reads, requests/uploads/dice already in progress, unsent-edit recovery, retries and restart persistence. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI. Artwork checks cover large maps, authenticated caching, format/size/foreign-reference rejection, upload races/retries, GIF animation, masked/nested copies, portable export/import, compact operations and backed-up migration.
+
+Identity and navigation checks cover self-only profile updates, durable profile versions, stale tabs, unchanged ownership/entity versions, live labels/colors, reconnect retries, unfinished typing/gestures, different viewport aspect ratios, independent cameras and local camera restoration.

@@ -9,13 +9,14 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [title, setTitle] = useState("Shared table"), [link, setLink] = useState("");
   const [confirmation, setConfirmation] = useState<{ kind: "invitation" | "remove"; invite: string; member?: string; name?: string } | null>(null);
   const [notice, setNotice] = useState("");
+  const [identityDraft, setIdentityDraft] = useState<{ name: string; color: string; version: number } | null>(null);
   const [profile, setProfile] = useState(() => {
     try { const v = JSON.parse(localStorage.getItem("table-goblin-identity") || "null"); if (typeof v?.name === "string" && /^#[a-f0-9]{6}$/i.test(v.color)) return { name: v.name, color: v.color }; } catch {}
     return { name: "", color: "#e3a069" };
   });
   const anchor = useRef<HTMLDivElement>(null), client = useRef<RoomClient | null>(null), restored = useRef("");
   const connect = (state: RoomState) => {
-    setConfirmation(null); setNotice("");
+    setConfirmation(null); setIdentityDraft(null); setNotice("");
     client.current?.close();
     client.current = new RoomClient(engine!, state, (next, status) => { setRoom(next); setStatus(status); onStatus(status); }, message => { setError(message); setOpen(true); });
     setRoom(state); setStatus("offline"); onStatus("offline");
@@ -38,7 +39,13 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
     return () => { cancelled = true; window.removeEventListener("hashchange", restore); };
   }, [engine, ready]);
   useEffect(() => () => client.current?.close(), []);
-  useEffect(() => { if (!open) setConfirmation(null); }, [open]);
+  useEffect(() => { if (!open) { setConfirmation(null); setIdentityDraft(null); } }, [open]);
+  useEffect(() => {
+    if (!room) return;
+    const identity = { name: room.me.name, color: room.me.color };
+    setProfile(identity);
+    try { localStorage.setItem("table-goblin-identity", JSON.stringify(identity)); } catch {}
+  }, [room?.me.name, room?.me.color]);
   useEffect(() => {
     if (!open) return;
     const close = (e: PointerEvent) => { if (!anchor.current?.contains(e.target as Node)) setOpen(false); };
@@ -74,8 +81,25 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
         })}>Join room</button>
         <p className="widget-note">Rooms start empty. Your local table stays saved separately. Start “Open Online Table Goblin” from the project folder to try rooms.</p>
       </> : <>
-        <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : status === "removed" ? "Access ended" : "Reconnecting…"}</small></div>
-        {status !== "removed" && <div className="room-people">{room.participants.map(p => <div key={p.id} data-participant={p.id}><i style={{ background: p.color, opacity: p.online ? 1 : .35 }} /><span>{p.name}</span><small>{p.role === "gm" ? "GM · " : ""}{p.online ? "online" : "offline"}</small>{room.me.role === "gm" && p.role === "player" && <button className="room-remove" aria-label={`Remove ${p.name} from room`} title={`Remove ${p.name} from room`} disabled={!canManage} onClick={() => { setError(""); setNotice(""); setConfirmation({ kind: "remove", member: p.id, name: p.name, invite: room.invite! }); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg></button>}</div>)}</div>}
+        <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : status === "removed" ? "Access ended" : "Reconnecting…"}</small>{status !== "removed" && <button className="room-person-action" aria-label="Edit identity" title="Edit your name and pointer color" disabled={!canManage} onClick={() => { setError(""); setNotice(""); setIdentityDraft({ name: room.me.name, color: room.me.color, version: room.me.profileVersion ?? 0 }); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3ZM13 6l5 5"/></svg></button>}</div>
+        {identityDraft && status !== "removed" && <form className="room-identity" aria-label="Edit your identity" onSubmit={e => {
+          e.preventDefault(); const chosen = identityDraft;
+          void act(async () => {
+            try { await client.current!.updateProfile(chosen.name, chosen.color, chosen.version); setIdentityDraft(null); setNotice("Identity updated."); }
+            catch (error) { setIdentityDraft(draft => draft && { ...draft, version: client.current!.state.me.profileVersion ?? 0 }); throw error; }
+          });
+        }}><fieldset disabled={!canManage}>
+          <label>Your name<input aria-label="Your room name" maxLength={32} value={identityDraft.name} onChange={e => setIdentityDraft({ ...identityDraft, name: e.target.value })} /></label>
+          <ColorControl label="Pointer color" value={identityDraft.color} onChange={color => setIdentityDraft(draft => draft && { ...draft, color })} />
+          <div className="room-actions"><button type="submit" className="widget-primary" disabled={!identityDraft.name.trim()}>Save identity</button><button type="button" onClick={() => setIdentityDraft(null)}>Cancel</button></div>
+        </fieldset></form>}
+        {status !== "removed" && <div className="room-people">{room.participants.map(p => {
+          const view = room.presence.find(entry => entry.id === p.id)?.view;
+          return <div key={p.id} data-participant={p.id}><i style={{ background: p.color, opacity: p.online ? 1 : .35 }} /><span>{p.name}</span><small>{p.role === "gm" ? "GM · " : ""}{p.online ? "online" : "offline"}</small>
+            {p.id !== room.me.id && p.online && <button className="room-person-action" aria-label={`Go to ${p.name}'s view`} title={view ? `Go to ${p.name}'s view` : "Waiting for their view"} disabled={!canManage || !view} onClick={() => { if (view && engine?.goToRoomView(view)) setOpen(false); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/></svg></button>}
+            {room.me.role === "gm" && p.role === "player" && <button className="room-person-action" aria-label={`Remove ${p.name} from room`} title={`Remove ${p.name} from room`} disabled={!canManage} onClick={() => { setError(""); setNotice(""); setConfirmation({ kind: "remove", member: p.id, name: p.name, invite: room.invite! }); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg></button>}
+          </div>;
+        })}</div>}
         {confirmation && <div className="room-confirm" role="group" aria-label="Confirm room access change">
           <strong>{confirmation.kind === "remove" ? `Remove ${confirmation.name}?` : "Replace invitation?"}</strong>
           <p>{confirmation.kind === "remove" ? "Their objects stay and become yours. Their access ends, and the invitation is replaced." : "Old invitation links stop working. Players already in the room stay connected."}</p>

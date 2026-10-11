@@ -267,6 +267,7 @@ async function browserTests() {
   const dice = await require("./online-dice.cjs")(api, operation);
   const assets = await require("./online-assets.cjs")(base, api, operation, data);
   const management = await require("./online-management.cjs")(base, api, operation);
+  const identity = await require("./online-identity.cjs")(api, operation);
   await require("./online-management-async.cjs")();
   console.log("PASS: server-chosen grouped/color dice, simultaneous rolls, in-flight and persisted deduplication, forged request rejection and independent table undo");
   console.log("PASS: object ownership, specific editors, protected groups, independent tokens on locked maps, creation grants, sharing revocation, drag races, renew/release/disconnect/expiry and forged lease requests");
@@ -288,6 +289,7 @@ async function browserTests() {
   assert.equal((await api(dice.root + "/rolls", dice.gm, dice.first)).json.dice.sequence, 2);
   await assets.afterRestart(base, api);
   await management.afterRestart(api);
+  await identity.afterRestart();
   console.log("PASS: server restart restores room contents, permissions, participant roles and reconnect credentials");
   browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   await browserTests();
@@ -296,5 +298,6 @@ async function browserTests() {
   await require("./online-dice-browser.cjs")(browser, base);
   await require("./online-assets-browser.cjs")(browser, base);
   await require("./online-management-browser.cjs")(browser, base);
+  await require("./online-identity-browser.cjs")(browser, base);
   await require("./online-compat.cjs")(browser, base);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => { await browser?.close(); await stop(); });

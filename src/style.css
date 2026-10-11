@@ -2507,8 +2507,10 @@ kbd {
 .room-people { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; border-top: 1px solid var(--mood-border); border-bottom: 1px solid var(--mood-border); }
 .room-role > span, .room-people > div > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-people small { flex-shrink: 0; }
-.room-people .room-remove { display: grid; place-items: center; width: 26px; height: 26px; padding: 4px; color: var(--mood-muted); border-radius: 5px; flex: 0 0 26px; }
-.room-people .room-remove:hover { color: var(--mood-ink); background: var(--mood-panel); }
+.room-panel .room-person-action { display: grid; place-items: center; width: 26px; height: 26px; padding: 4px; color: var(--mood-muted); border-radius: 5px; flex: 0 0 26px; }
+.room-panel .room-person-action:hover { color: var(--mood-ink); background: var(--mood-panel); }
+.room-role small { flex-shrink: 0; }
+.room-identity fieldset { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--mood-border); border-radius: 8px; }
 .room-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .room-actions > button { width: auto; flex: 1 1 0; padding: 9px 7px; font-size: 11px; border: 1px solid var(--mood-border); border-radius: 7px; white-space: nowrap; }
 .room-confirm { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--mood-panel); border: 1px solid var(--mood-border); border-radius: 8px; }

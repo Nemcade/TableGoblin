@@ -2,7 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes, randomUUID, createHash } = require("node:crypto");
-const { ROOM_PROTOCOL, emptySharedTable, parseSharedTable } = require("../.server-runtime/room-state.cjs");
+const { ROOM_PROTOCOL, emptySharedTable, parseSharedTable, validPresence } = require("../.server-runtime/room-state.cjs");
 const runningBuild = require("./online-runtime.cjs").serverBuild();
 const { tableChanges, validOperation, operationConflict, applyChanges, expectations, inverseChanges, advanceVersions } = require("../.server-runtime/room-operations.cjs");
 const { requiredKeys } = require("../.server-runtime/room-operations.cjs");
@@ -55,6 +55,7 @@ function load(id) {
     try {
       const room = JSON.parse(fs.readFileSync(path.join(data, `${id}.json`), "utf8"));
       if (room.id !== id || !parseSharedTable(room.table) || !Array.isArray(room.members) || !Number.isSafeInteger(room.revision)) throw new Error("Invalid room record");
+      if (room.members.some(m => m.profileVersion !== undefined && (!Number.isSafeInteger(m.profileVersion) || m.profileVersion < 0))) throw new Error("Invalid identity version");
       // Original prototype rooms have no operation metadata. Preserve their table
       // and credentials, and begin entity versioning at the saved revision.
       room.versions ??= Object.fromEntries([...room.table.scene.objects.map(o => `object:${o.id}`), ...room.table.scene.strokes.map(s => `stroke:${s.id}`), "widget:mood", "widget:grid", "widget:obscure"].map(key => [key, room.revision]));
@@ -94,7 +95,7 @@ function setCookie(res, room, token) {
   res.setHeader("Set-Cookie", `tg_${room.id}=${token}; Path=/api/rooms/${room.id}; HttpOnly; SameSite=Strict; Max-Age=31536000${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
 }
 function people(room) {
-  return room.members.map(({ id, name, color, role }) => ({ id, name, color, role, online: [...(clients.get(room.id) || [])].some(c => c.id === id) }));
+  return room.members.map(({ id, name, color, role, profileVersion = 0 }) => ({ id, name, color, role, profileVersion, online: [...(clients.get(room.id) || [])].some(c => c.id === id) }));
 }
 function state(room, me) {
   return { protocol: ROOM_PROTOCOL, id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
@@ -177,7 +178,7 @@ const server = http.createServer(async (req, res) => {
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage|profile)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -185,10 +186,11 @@ const server = http.createServer(async (req, res) => {
         const v = await body(req), profile = identity(v);
         if (typeof v.invite !== "string" || hash(v.invite) !== hash(room.invite)) fail(403, "This invitation is invalid.");
         let existing; try { existing = member(req, room); } catch {}
-        if (existing) {
-          const next = { ...room, members: room.members.map(m => m.id === existing.id ? { ...m, ...profile } : m) };
+        if (existing && (existing.name !== profile.name || existing.color !== profile.color)) {
+          const next = { ...room, revision: room.revision + 1, members: room.members.map(m => m.id === existing.id ? { ...m, ...profile, profileVersion: (m.profileVersion ?? 0) + 1 } : m) };
           persist(next); Object.assign(room, next); existing = room.members.find(m => m.id === existing.id);
-        } else {
+          publishTable(room, existing.id);
+        } else if (!existing) {
           if (room.members.length >= 24) fail(403, "This playtest room is full.");
           const token = secret(); existing = { id: randomUUID(), ...profile, role: "player", tokenHash: hash(token) };
           const next = { ...room, members: [...room.members, existing] };
@@ -220,6 +222,22 @@ const server = http.createServer(async (req, res) => {
       rate(req, `commands:${room.id}:${me.id}`, 1200);
       const v = await body(req);
       me = member(req, room); // Credentials may have been revoked while reading the body.
+      if (action === "profile") {
+        const profile = identity(v);
+        if (typeof v.id !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.id) || !Number.isSafeInteger(v.version) || v.version < 0) fail(400, "Invalid identity update.");
+        const digest = hash(JSON.stringify({ action, value: v })), receipt = room.receipts.find(r => r.id === v.id && r.actor === me.id);
+        if (receipt) {
+          if (receipt.digest !== digest) fail(409, "This request identity has already been used for a different action.");
+          return json(res, 200, state(room, me));
+        }
+        if (v.version !== (me.profileVersion ?? 0)) return json(res, 409, { error: "Your identity changed in another window. Review the current name and color before saving again.", state: state(room, me) });
+        const revision = room.revision + 1;
+        const next = { ...room, revision,
+          members: room.members.map(m => m.id === me.id ? { ...m, ...profile, profileVersion: v.version + 1 } : m),
+          receipts: [...room.receipts, { id: v.id, actor: me.id, digest, revision }].slice(-256) };
+        persist(next); Object.assign(room, next); publishTable(room, me.id, v.id);
+        return json(res, 200, state(room, me));
+      }
       if (action === "manage") {
         if (me.role !== "gm") fail(403, "Only the GM can replace invitations or remove participants.");
         if (typeof v.id !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.id) || !["invitation", "remove"].includes(v.kind) || typeof v.invite !== "string" || v.invite.length > 100 ||
@@ -320,10 +338,10 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, state(room, me));
       }
       if (action === "presence") {
-        if (!v || !Array.isArray(v.selection) || v.selection.length > 64 || !v.selection.every(id => typeof id === "string" && id.length <= 128) ||
-          (v.laser !== null && (!v.laser || ![v.laser.x, v.laser.y].every(n => typeof n === "number" && Number.isFinite(n) && Math.abs(n) < 1e7)))) fail(400, "Invalid pointer or selection.");
+        if (!validPresence(v)) fail(400, "Invalid pointer, selection or view.");
         const entries = presence.get(room.id) || new Map();
-        entries.set(me.id, { id: me.id, selection: v.selection.filter(id => room.table.scene.objects.some(o => o.id === id)), laser: v.laser, seen: Date.now() });
+        entries.set(me.id, { id: me.id, selection: v.selection.filter(id => room.table.scene.objects.some(o => o.id === id)), laser: v.laser ? { x: v.laser.x, y: v.laser.y } : null,
+          view: v.view ? { x: v.view.x, y: v.view.y, width: v.view.width, height: v.view.height } : null, seen: Date.now() });
         presence.set(room.id, entries); broadcastPeople(room); return json(res, 200, { ok: true });
       }
       if (action === "permissions") {

@@ -46,6 +46,7 @@ import { TableAudio } from "./audio";
 import { defaultMood, type Mood } from "./mood";
 import { isHexColor } from "./colors.ts";
 import { parseSharedTable, type SharedTable, type Participant, type Presence } from "./room-state";
+import { viewFromCamera, cameraAtView, type RoomView } from "./room-presence";
 import { canEdit, editsAllowed, hierarchy, type AccessMap, type ObjectAccess, type DragLease } from "./room-permissions";
 import { tableChanges, applyChanges } from "./room-operations";
 import { LocalTableStore, tableFile, recoveryFile, readTableFile, type SaveStatus, type StoredTable, type TableSnapshot } from "./table-storage";
@@ -589,7 +590,15 @@ export class TableEngine {
     this.invalidate();
   }
   getRoomPresence(): Omit<Presence, "id"> {
-    return { selection: [...this.selection].slice(0, 64), laser: this.gesture?.kind === "laser" ? this.hover : null };
+    return { selection: [...this.selection].slice(0, 64), laser: this.gesture?.kind === "laser" ? this.hover : null,
+      view: viewFromCamera(this.camera, this.viewWidth, this.viewHeight) };
+  }
+  goToRoomView(view: RoomView) {
+    if (!this.roomActive || !this.roomConnected) return false;
+    if (this.gesture || this.editingId) { this.notify("Finish your current edit before going to another view."); return false; }
+    const camera = cameraAtView(view, this.viewWidth, this.viewHeight);
+    if (!camera) return false;
+    this.camera = camera; this.emit(false); return true;
   }
   private roomEditAllowed() {
     if (!this.roomActive || this.roomEditable && this.roomConnected) return true;
