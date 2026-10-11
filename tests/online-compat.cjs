@@ -25,7 +25,7 @@ async function launcherTests(upstream) {
       child.stderr.on("data", c => process.stderr.write(c)); child.on("error", reject);
     });
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
-    assert.equal(health.protocol, 3); assert.equal(typeof health.build, "string");
+    assert.equal(health.protocol, 4); assert.equal(typeof health.build, "string");
     assert.equal((await runLauncher(port)).code, 0);
   } finally {
     // Terminate only the process tree this test just created, including its
@@ -38,8 +38,8 @@ async function launcherTests(upstream) {
 // current server behind it for durable storage and authenticated identities.
 function legacy(value, protocol = 0) {
   if (!value || typeof value !== "object") return value;
-  const next = { ...value }; for (const key of ["build", "access", "leases", ...(protocol === 0 ? ["protocol", "versions", "history", "accepted"] : [])]) delete next[key];
-  if (protocol === 2 && next.protocol !== undefined) next.protocol = 2;
+  const next = { ...value }; for (const key of ["build", "dice", "diceAccepted", "serverTime", ...(protocol === 3 ? [] : ["access", "leases"]), ...(protocol === 0 ? ["protocol", "versions", "history", "accepted"] : [])]) delete next[key];
+  if (protocol > 0 && next.protocol !== undefined) next.protocol = protocol;
   if (next.state) next.state = legacy(next.state, protocol);
   return next;
 }
@@ -105,13 +105,15 @@ module.exports = async function compatibilityTests(browser, upstream) {
     await request(root + "/table", host.cookie, { revision: 1, table });
     for (const page of pages) await page.waitForFunction(() => document.querySelector("canvas").getContext("2d").getImageData(880, 450, 1, 1).data[3] > 0);
     await pages[1].reload(); await pages[1].getByLabel("Room connection status").filter({ hasText: "RESTART ROOM SERVER" }).waitFor();
-    protocol = 2;
-    for (const page of pages) {
-      await page.reload();
-      await page.getByLabel("Room connection status").filter({ hasText: "RESTART ROOM SERVER" }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).isEnabled(), false);
-      await page.getByRole("button", { name: "Close room controls", exact: true }).click();
-      await page.waitForFunction(() => document.querySelector("canvas").getContext("2d").getImageData(880, 450, 1, 1).data[3] > 0);
+    for (const previous of [2, 3]) {
+      protocol = previous;
+      for (const page of pages) {
+        await page.reload();
+        await page.getByLabel("Room connection status").filter({ hasText: "RESTART ROOM SERVER" }).waitFor();
+        assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).isEnabled(), false);
+        await page.getByRole("button", { name: "Close room controls", exact: true }).click();
+        await page.waitForFunction(() => document.querySelector("canvas").getContext("2d").getImageData(880, 450, 1, 1).data[3] > 0);
+      }
     }
     assert.deepEqual(errors, [], "Missing history/versions and partial table events cause no uncaught exceptions");
     const launcher = await runLauncher(proxy.address().port);

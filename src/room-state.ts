@@ -4,9 +4,10 @@ import { defaultGrid, defaultObscure } from "./table-widgets.ts";
 import { defaultDiceGroup } from "./dice-types.ts";
 import type { Point, Scene } from "./model.ts";
 import { locksAllowed, validAccess, type AccessMap, type DragLease } from "./room-permissions.ts";
+import { emptyRoomDice, parseRoomDice, validRollReceipts, type RoomDice, type RollReceipt } from "./room-dice.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 3;
+export const ROOM_PROTOCOL = 4;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean };
 export type Presence = { id: string; selection: string[]; laser: Point | null };
 export type RoomState = {
@@ -17,6 +18,7 @@ export type RoomState = {
   history: { undo: boolean; redo: boolean };
   accepted: { id: string; revision: number }[];
   access: AccessMap; leases: DragLease[];
+  dice: RoomDice; diceAccepted: RollReceipt[]; serverTime: number;
   invite?: string;
 };
 /** Decode the API boundary; older servers can still display their saved table. */
@@ -37,7 +39,10 @@ export function readRoomState(value: unknown, previous?: RoomState): RoomState |
   if (protocol === ROOM_PROTOCOL && (!v.access || typeof v.access !== "object" || Array.isArray(v.access) || !Object.values(v.access).every(validAccess) ||
     [...table.scene.objects.map(o => `object:${o.id}`), ...table.scene.strokes.map(o => `stroke:${o.id}`)].some(key => !validAccess(v.access[key])) ||
     !Array.isArray(v.leases) || !v.leases.every((l: any) => l && typeof l.client === "string" && typeof l.actor === "string" && Number.isFinite(l.expires) && Array.isArray(l.objects) && l.objects.every((id: any) => typeof id === "string")))) return null;
-  return { ...v, protocol, table, access: v.access ?? {}, leases: v.leases ?? [], versions: metadata ? v.versions : {}, history: metadata ? v.history : { undo: false, redo: false }, accepted: metadata ? v.accepted : [] } as RoomState;
+  const dice = parseRoomDice(v.dice);
+  if (protocol === ROOM_PROTOCOL && (!dice || !validRollReceipts(v.diceAccepted, dice.sequence) || !Number.isSafeInteger(v.serverTime) || v.serverTime < 0)) return null;
+  return { ...v, protocol, table, dice: dice ?? emptyRoomDice(), diceAccepted: dice && validRollReceipts(v.diceAccepted, dice.sequence) ? v.diceAccepted : [], serverTime: Number.isSafeInteger(v.serverTime) ? v.serverTime : 0,
+    access: v.access ?? {}, leases: v.leases ?? [], versions: metadata ? v.versions : {}, history: metadata ? v.history : { undo: false, redo: false }, accepted: metadata ? v.accepted : [] } as RoomState;
 }
 export const emptySharedTable = (): SharedTable => ({
   scene: { objects: [], strokes: [] }, mood: { ...defaultMood },

@@ -78,7 +78,7 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
           <label>Player invitation<input aria-label="Player invitation" readOnly value={inviteLink} onFocus={e => e.target.select()} /></label>
           <button className="widget-primary" onClick={() => void act(async () => { await navigator.clipboard.writeText(inviteLink); })}>Copy invitation</button>
         </> : <p className="widget-note">You can edit your own and shared objects.{room.playerEditing ? " You can also add objects and draw on the canvas." : " Ask the GM to enable adding objects."}</p>}
-        <p className="widget-note">Shapes, text, images and drawings are shared. Undo reverses your own edits. Pan, zoom, rulers and dice are personal. The GM controls mood, grid and cover.</p>
+        <p className="widget-note">Objects and dice rolls are shared. Undo reverses your own object edits. Pan, zoom, rulers, dice selections and presets are personal. The GM controls mood, grid and cover.</p>
         {status === "offline" && <button className="widget-primary" disabled={busy} onClick={() => void act(async () => {
           await client.current!.reconnect();
         })}>Rejoin room</button>}

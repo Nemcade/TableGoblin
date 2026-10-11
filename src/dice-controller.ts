@@ -16,6 +16,8 @@ import {
   type RollRecord,
 } from "./dice-types.ts";
 import { dieMesh, turn, type Mesh, type Q, type V3 } from "./dice-geometry.ts";
+import { diceThrow, displayDice } from "./dice-throw.ts";
+import type { RoomRoll } from "./room-dice.ts";
 import {
   simulateDice,
   type PhysicsRequest,
@@ -32,6 +34,7 @@ type Body = {
   position: V3;
   q: Q;
   size: number;
+  fixedAppearance?: boolean;
 };
 const normalize = (q: Q): Q => {
   const n = Math.hypot(q.x, q.y, q.z, q.w);
@@ -76,6 +79,7 @@ export class TableDice {
   private settledAt: number | null = null;
   private opacity = 1;
   private impactIndex = 0;
+  private synchronized = false;
   constructor(changed: (save?: boolean) => void) {
     this.changed = changed;
   }
@@ -153,6 +157,7 @@ export class TableDice {
     this.settledAt = null;
     this.opacity = 1;
     this.impactIndex = 0;
+    this.synchronized = false;
     this.state = { ...this.state, visible: false };
     this.sound.stop();
   }
@@ -345,6 +350,34 @@ export class TableDice {
       this.pose(0);
       this.changed();
     };
+    this.simulate(request, ready);
+  }
+  prepareSound() { this.sound.prepare(); }
+  /** Replay server-chosen results with an immutable world-space throw. */
+  playShared(record: RoomRoll, serverNow: number) {
+    this.cancel(); this.synchronized = true;
+    this.pending = record;
+    this.launch = { x: -record.area.x * 64 / record.area.scale, y: -record.area.y * 64 / record.area.scale, zoom: 64 / record.area.scale };
+    this.start = performance.now() + record.startedAt - serverNow;
+    const items = displayDice(record.dice), request = diceThrow(record.dice, record.area, record.seed), generation = this.generation;
+    this.bodies = items.map(({ die, sides, labels }, i) => ({ groupId: die.groupId!, color: die.color!, fontColor: die.fontColor!, mesh: dieMesh(sides), sides, labels,
+      resultFace: 0, position: { x: 0, y: 0, z: 0 }, q: request.specs[i].q, size: request.specs[i].radius * record.area.scale, fixedAppearance: true }));
+    this.state = { ...this.state, rolling: true, result: null };
+    this.simulate(request, roll => {
+      if (generation !== this.generation || !this.state.enabled) return;
+      const age = Math.max(0, (performance.now() - this.start) / 1000);
+      if (age >= record.duration + 4.9) { this.cancel(); this.state = { ...this.state, rolling: false }; this.changed(false); return; }
+      this.bodies.forEach((b, i) => {
+        b.resultFace = roll.resultFaces[i];
+        const labels = [...b.labels], from = items[i].desired;
+        [labels[b.resultFace], labels[from]] = [labels[from], labels[b.resultFace]]; b.labels = labels;
+      });
+      this.frames = roll; this.state = { ...this.state, visible: true };
+      this.pose(Math.min(roll.frameCount - 1, age * roll.fps)); this.changed(false);
+    });
+  }
+  private simulate(request: PhysicsRequest, ready: (roll: PhysicsRoll) => void) {
+    const generation = this.generation;
     // Simulate off the UI thread; replay the physical trajectory without a forced settling animation.
     if (typeof Worker !== "undefined" && import.meta.url) {
       try {
@@ -410,6 +443,7 @@ export class TableDice {
   }
   step(now: number, camera: Camera, width: number, _height: number) {
     if (!this.frames) return false;
+    if (now < this.start) return false;
     if (!this.state.rolling) {
       if (this.settledAt === null || now < this.settledAt + 4000) return false;
       const fade = Math.min(1, (now - this.settledAt - 4000) / 900);
@@ -435,7 +469,7 @@ export class TableDice {
     if (frame === this.frames.frameCount - 1 && this.pending) {
       const record = this.pending;
       this.pending = null;
-      this.settledAt = now;
+      this.settledAt = this.synchronized ? this.start + (this.frames.frameCount - 1) / this.frames.fps * 1000 : now;
       this.state = {
         ...this.state,
         rolling: false,
@@ -448,12 +482,13 @@ export class TableDice {
   }
   draw(ctx: CanvasRenderingContext2D, camera: Camera, mood: Mood) {
     if (!this.state.enabled || !this.frames) return;
+    if (this.synchronized && performance.now() < this.start) return;
     ctx.save();
     ctx.globalAlpha *= this.opacity;
     for (const b of [...this.bodies].sort(
       (a, b) => a.position.z - b.position.z,
     )) {
-      const group = this.state.groups.find((g) => g.id === b.groupId);
+      const group = !b.fixedAppearance && this.state.groups.find((g) => g.id === b.groupId);
       const palette = dicePalette(mood, group ? group.color ?? this.state.color : b.color, group ? group.fontColor ?? this.state.fontColor : b.fontColor);
       const x = b.position.x * camera.zoom + camera.x,
         y = b.position.y * camera.zoom + camera.y,

@@ -225,6 +225,22 @@ async function browserTests() {
     await gm.getByRole("textbox", { name: "Text content", exact: true }).fill("Shared note");
     await gm.mouse.click(300, 250);
     await waitState(player, state => state.table.scene.objects.some(o => o.text?.content === "Shared note"));
+    for (const page of [gm, player]) await page.getByRole("button", { name: "Open Dice widget", exact: true }).click();
+    await gm.getByRole("button", { name: "Add d6", exact: true }).click({ clickCount: 2 });
+    await player.getByRole("button", { name: "Add d20", exact: true }).click();
+    await gm.getByRole("button", { name: "Roll dice", exact: true }).click();
+    const rolled = await waitState(player, s => s.dice.sequence === 1);
+    const total = String(rolled.dice.rolls[0].total);
+    await player.reload(); await player.getByLabel("Room connection status").filter({ hasText: "ROOM CONNECTED" }).waitFor();
+    await player.getByRole("button", { name: "Open Dice widget", exact: true }).click();
+    assert.equal(await player.locator(".dice-pool > span").innerText(), "1d20", "Refresh during a throw preserves personal dice selection");
+    for (const page of [gm, player]) {
+      await page.locator(".dice-result strong").filter({ hasText: new RegExp(`^${total}$`) }).waitFor();
+      assert.equal(await page.locator(".dice-result .roll-actor").innerText(), "GM ·");
+      assert.equal(await page.locator(".roll-history li").count(), 1);
+    }
+    assert.equal(await player.locator(".dice-result strong").innerText(), total, "Refresh restores shared result history");
+    await player.screenshot({ path: ".test-artifacts/online-dice-widget.png" });
     await playerContext.setOffline(true);
     await player.getByLabel("Room connection status").filter({ hasText: "ROOM OFFLINE" }).waitFor();
     await playerContext.setOffline(false);
@@ -248,11 +264,13 @@ async function browserTests() {
   console.log("PASS: authenticated roles, separate invite credentials, stable identities, server-side editing/lock/settings checks, payload validation, origins and stale-revision conflicts");
   const operations = await operationTests();
   const ownership = await require("./online-access.cjs")(api, operation, base);
+  const dice = await require("./online-dice.cjs")(api, operation);
+  console.log("PASS: server-chosen grouped/color dice, simultaneous rolls, in-flight and persisted deduplication, forged request rejection and independent table undo");
   console.log("PASS: object ownership, specific editors, protected groups, independent tokens on locked maps, creation grants, sharing revocation, drag races, renew/release/disconnect/expiry and forged lease requests");
   console.log("PASS: concurrent independent commands, per-entity and ABA conflicts, forged dependencies, permission revocation, actor undo/redo and idempotent retries");
   const port = Number(new URL(base).port); await stop();
   const legacyFile = path.join(data, `${persistence.state.id}.json`), legacy = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
-  delete legacy.versions; delete legacy.history; delete legacy.receipts; delete legacy.access; fs.writeFileSync(legacyFile, JSON.stringify(legacy));
+  delete legacy.versions; delete legacy.history; delete legacy.receipts; delete legacy.access; delete legacy.dice; delete legacy.rollReceipts; fs.writeFileSync(legacyFile, JSON.stringify(legacy));
   base = await start(port);
   const restored = await api(persistence.root + "/state", persistence.playerCookie);
   assert.equal(restored.status, 200); assert.deepEqual(restored.json.table, persistence.state.table); assert.equal(restored.json.me.id, persistence.state.me.id);
@@ -262,10 +280,14 @@ async function browserTests() {
   const accessRestored = (await api(ownership.root + "/state", ownership.cookie)).json;
   assert.deepEqual(accessRestored.access, ownership.access); assert.deepEqual(accessRestored.leases, []);
   assert.ok(Object.values(restored.json.access).every(p => p.shared), "Old globally editable rooms migrate to shared pieces");
+  assert.deepEqual(restored.json.dice, { sequence: 0, rolls: [] });
+  assert.deepEqual((await api(dice.root + "/state", dice.player)).json.dice, dice.dice);
+  assert.equal((await api(dice.root + "/rolls", dice.gm, dice.first)).json.dice.sequence, 2);
   console.log("PASS: server restart restores room contents, permissions, participant roles and reconnect credentials");
   browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   await browserTests();
-  console.log("PASS: two-browser room creation/join, shared transforms/artwork/text, colored presence, editing permissions, refresh identity, network reconnect and untouched local table");
+  console.log("PASS: two-browser room creation/join, shared transforms/artwork/text/dice widget, refresh during a throw, personal dice preferences, colored presence, editing permissions, refresh identity, network reconnect and untouched local table");
   await require("./online-sync.cjs")(browser, base);
+  await require("./online-dice-browser.cjs")(browser, base);
   await require("./online-compat.cjs")(browser, base);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => { await browser?.close(); await stop(); });

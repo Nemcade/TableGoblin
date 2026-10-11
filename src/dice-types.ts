@@ -15,6 +15,7 @@ export type RollRecord = {
   notation: string;
   dice: DieResult[];
   total: number;
+  actorId?: string; actorName?: string; actorColor?: string;
 };
 export type DiceState = {
   enabled: boolean;
@@ -28,6 +29,7 @@ export type DiceState = {
   rolling: boolean;
   result: RollRecord | null;
   history: RollRecord[];
+  shared?: boolean; sharedRolling?: boolean; currentRoll?: RollRecord;
 };
 export function diceNotation(pool: DicePool) {
   return diceTypes

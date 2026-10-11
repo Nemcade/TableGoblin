@@ -26,12 +26,23 @@ Browser identities and GM credentials use persistent, HttpOnly cookies scoped to
 - GM mood, grid and visual Obscure edits. GM cover opacity stays local to the GM's view.
 - Colored selection outlines and laser points with participant names. Presence is transient; stale laser points expire and disconnected participants' selections disappear.
 - Durable room contents, roles, identities and object ownership/sharing. Server restart preserves them.
+- Dice throws, their color groups, participant names, and the last 12 results. Everyone sees the same physical throw in world coordinates.
 
-Pan/zoom, current selection, pen preferences, rulers, preset libraries, and dice remain personal. Shared authoritative dice and live audio/video transport are subsequent stages. The Obscure cover remains a visual mask; room members receive the underlying content.
+Pan/zoom, current selection, pen preferences, rulers, preset libraries, dice selection/colors and sound preferences remain personal. Live audio/video transport is a subsequent stage. The Obscure cover remains a visual mask; room members receive the underlying content.
+
+## Shared dice
+
+Open the **Dice** widget, choose dice and color groups, then **Roll dice**. Both GM and players can roll, including players who cannot add objects. Different participants can throw simultaneously. The server chooses unbiased results once and broadcasts a deterministic physics package; viewers see matching dice positions, final faces, and colors at their own camera zoom.
+
+The result and history identify the roller and retain the colors from that throw. Each browser remembers its own selection, colors, sound preference and widget visibility across refreshes. Named presets remain personal. Room rolls do not replace local-table dice history, and object Undo/Redo does not change dice results.
+
+Dice fade after four seconds at rest. **Clear table dice** removes visible dice only from your own view and keeps shared history. Joining or reconnecting catches up with active throws and restores history without replaying expired animations. Lost acknowledgements retry the same request without generating another result. The server persists the last 12 rolls and 256 request receipts across restarts.
+
+Each participant can roll again after their throw settles. A selection holds at most 20 dice across six color groups; the room allows eight visible throws at once and 30 new requests per participant per minute. Physics runs in server workers so rolling does not block object edits or presence updates.
 
 ## Permissions and conflicts
 
-Players initially view, select, pan, measure and point. The GM can enable **Allow players to add objects and draw**. Newly created pieces and freehand canvas drawings belong to their creator. Turning creation off still lets a player edit their owned and shared pieces. The GM retains atmosphere/grid/cover and lock controls.
+Players initially view, select, pan, measure, roll dice and point. The GM can enable **Allow players to add objects and draw**. Newly created pieces and freehand canvas drawings belong to their creator. Turning creation off still lets a player edit their owned and shared pieces. The GM retains atmosphere/grid/cover and lock controls.
 
 Right-click an object or a selection as the GM and open **Sharing**. Choose its owner, allow everyone to edit, or check specific editors, then **Apply sharing**. This applies to the entire selected hierarchy. New children retain their creator's ownership; nesting alone does not grant control over them. A shared parent cannot be moved, resized, rotated or deleted by a player if it contains protected pieces. A locked map can hold independent tokens that their owners can move freely. Locks protect placement; authorized recoloring and drawing do not move the background. Server checks cover direct commands, stacking order, legacy updates and undo; client-supplied identities cannot grant authority.
 
@@ -68,4 +79,4 @@ npm run test:online
 npm run test:browser
 ```
 
-Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table.
+Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI.

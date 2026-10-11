@@ -7,6 +7,9 @@ const runningBuild = require("./online-runtime.cjs").serverBuild();
 const { tableChanges, validOperation, operationConflict, applyChanges, expectations, inverseChanges, advanceVersions } = require("../.server-runtime/room-operations.cjs");
 const { requiredKeys } = require("../.server-runtime/room-operations.cjs");
 const { editsAllowed, canEdit, hierarchy, validAccess, assignNewAccess } = require("../.server-runtime/room-permissions.cjs");
+const { emptyRoomDice, parseRoomDice, parseRollRequest, makeRoll } = require("../.server-runtime/room-dice.cjs");
+const { diceThrow } = require("../.server-runtime/dice-throw.cjs");
+const diceService = require("./dice-service.cjs"), pendingRolls = new Map();
 const secret = () => randomBytes(32).toString("base64url");
 const hash = value => createHash("sha256").update(value).digest("hex");
 const project = path.resolve(__dirname, ".."), root = path.join(project, "dist");
@@ -62,6 +65,8 @@ function load(id) {
         for (const policy of Object.values(room.access)) policy.shared = room.playerEditing;
       }
       if (!Object.values(room.access).every(validAccess)) throw new Error("Invalid sharing data");
+      room.dice ??= emptyRoomDice(); room.rollReceipts ??= [];
+      if (!parseRoomDice(room.dice)) throw new Error("Invalid dice history");
       rooms.set(id, room);
     } catch (e) { fail(e.code === "ENOENT" ? 404 : 503, e.code === "ENOENT" ? "Room not found." : "This room's saved data could not be opened. It has been kept intact."); }
   }
@@ -84,9 +89,11 @@ function people(room) {
 function state(room, me) {
   return { protocol: ROOM_PROTOCOL, id: room.id, title: room.title, revision: room.revision, playerEditing: room.playerEditing,
     me: people(room).find(p => p.id === me.id), participants: people(room), presence: [...(presence.get(room.id)?.values() || [])], table: room.table,
-    access: room.access, leases: activeLeases(room), versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
+    ...diceState(room, me), access: room.access, leases: activeLeases(room), versions: room.versions, history: historyStatus(room, me.id), accepted: room.receipts.filter(r => r.actor === me.id).map(({ id, revision }) => ({ id, revision })),
     ...(me.role === "gm" ? { invite: room.invite } : {}) };
 }
+function diceState(room, me) { return { dice: room.dice, diceAccepted: room.rollReceipts.filter(r => r.actor === me.id).map(({ id, sequence }) => ({ id, sequence })), serverTime: Date.now() }; }
+function publishDice(room) { for (const c of clients.get(room.id) || []) send(c, "dice", diceState(room, room.members.find(m => m.id === c.id))); }
 function historyStatus(room, actor) {
   return { undo: room.history.some(h => h.actor === actor && !h.undone), redo: room.history.some(h => h.actor === actor && h.undone) };
 }
@@ -141,12 +148,12 @@ const server = http.createServer(async (req, res) => {
         if (fs.readdirSync(data).filter(f => f.endsWith(".json")).length >= 200) fail(503, "This playtest server has reached its room limit.");
         const v = await body(req), profile = identity(v), token = secret();
         const room = { id: randomBytes(8).toString("hex"), title: typeof v.title === "string" ? v.title.trim().slice(0, 60) || "Shared table" : "Shared table",
-          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), access: {}, versions: {}, history: [], receipts: [],
+          invite: secret(), revision: 0, playerEditing: false, table: emptySharedTable(), access: {}, versions: {}, history: [], receipts: [], dice: emptyRoomDice(), rollReceipts: [],
           members: [{ id: randomUUID(), ...profile, role: "gm", tokenHash: hash(token) }] };
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -188,6 +195,35 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== "POST") fail(405, "Method not allowed.");
       rate(req, `commands:${room.id}:${me.id}`, 1200);
       const v = await body(req);
+      if (action === "rolls") {
+        const request = parseRollRequest(v);
+        if (!request) fail(400, "Choose 1–20 dice with valid colors and a table position. Results are chosen by the room server.");
+        const digest = hash(JSON.stringify(request)), receipt = room.rollReceipts.find(r => r.id === request.id && r.actor === me.id), key = `${room.id}:${me.id}:${request.id}`;
+        if (receipt) {
+          if (receipt.digest !== digest) fail(409, "This roll identity has already been used for a different request.");
+          return json(res, 200, diceState(room, me));
+        }
+        const pending = pendingRolls.get(key);
+        if (pending && pending.digest !== digest) fail(409, "This roll identity has already been used for a different request.");
+        if (!pending) {
+          rate(req, `rolls:${room.id}:${me.id}`, 30);
+          const now = Date.now();
+          if (room.dice.rolls.some(r => r.actorId === me.id && r.startedAt + r.duration * 1000 > now) || [...pendingRolls.keys()].some(k => k.startsWith(`${room.id}:${me.id}:`))) fail(409, "Wait for your current dice roll to finish.");
+          if (room.dice.rolls.filter(r => r.startedAt + (r.duration + 4.9) * 1000 > now).length + [...pendingRolls.keys()].filter(k => k.startsWith(room.id + ":")).length >= 8) fail(429, "The table already has eight throws. Wait a moment before rolling.");
+          const seed = randomBytes(4).readUInt32LE(), record = makeRoll(request, room.table.mood, me, randomUUID(), () => randomBytes(4).readUInt32LE());
+          const promise = (async () => {
+            const { duration } = await diceService.simulate(diceThrow(record.dice, request.area, seed));
+            const sequence = room.dice.sequence + 1, roll = { ...record, sequence, seed, area: request.area, duration, startedAt: Date.now() + 350 };
+            const next = { ...room, dice: { sequence, rolls: [roll, ...room.dice.rolls].slice(0, 12) }, rollReceipts: [...room.rollReceipts, { id: request.id, actor: me.id, sequence, digest }].slice(-256) };
+            persist(next); Object.assign(room, next); publishDice(room);
+          })();
+          pendingRolls.set(key, { digest, promise });
+        }
+        try { await pendingRolls.get(key).promise; }
+        catch (error) { fail(503, error.message || "The roll could not be saved. Try again."); }
+        finally { pendingRolls.delete(key); }
+        return json(res, 200, diceState(room, me));
+      }
       if (action === "leases") {
         if (typeof v.client !== "string" || !/^[a-z0-9-]{16,80}$/i.test(v.client) || !["claim", "renew", "release"].includes(v.action)) fail(400, "Invalid drag request.");
         const held = leases.get(room.id) || new Map(), previous = held.get(v.client);
@@ -320,5 +356,5 @@ const presenceExpiry = setInterval(() => {
 }, 500);
 server.listen(port, host, () => console.log(`Table Goblin online: http://${host}:${server.address().port}/`));
 server.on("error", e => { clearInterval(presenceExpiry); console.error(e.message); process.exit(1); });
-function stop() { clearInterval(presenceExpiry); for (const connections of clients.values()) for (const c of connections) c.res.end(); server.close(() => process.exit(0)); }
+function stop() { clearInterval(presenceExpiry); diceService.stop(); for (const connections of clients.values()) for (const c of connections) c.res.end(); server.close(() => process.exit(0)); }
 process.on("SIGINT", stop); process.on("SIGTERM", stop);

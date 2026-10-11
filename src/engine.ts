@@ -51,6 +51,9 @@ import { tableChanges, applyChanges } from "./room-operations";
 import { LocalTableStore, tableFile, recoveryFile, readTableFile, type SaveStatus, type StoredTable, type TableSnapshot } from "./table-storage";
 import { parseDiceSetup } from "./presets";
 import { TableDice, type DiceState } from "./dice";
+import { diceArea, type RollArea } from "./dice-throw";
+import { emptyRoomDice, type RoomDice } from "./room-dice";
+import type { DiceSetup } from "./dice-types";
 import {
   defaultGrid,
   defaultObscure,
@@ -186,6 +189,14 @@ export class TableEngine {
   private roomShare: ((ids: string[], policy: ObjectAccess) => Promise<void>) | null = null;
   private roomDrag: ((ids: string[]) => void) | null = null;
   private roomDragEnd: (() => void) | null = null;
+  private roomDice = emptyRoomDice();
+  private roomThrows = new Map<string, TableDice>();
+  private roomDiceSeen = new Set<string>();
+  private roomDiceSending = false;
+  private roomDiceLoading = false;
+  private roomDiceClock = 0;
+  private roomDiceNextFinish = Infinity;
+  private roomRoll: ((setup: DiceSetup, area: RollArea) => void) | null = null;
   private roomBackup: StoredTable | null = null;
   private roomAccepted: SharedTable | null = null;
   private roomChange: (() => void) | null = null;
@@ -214,7 +225,15 @@ export class TableEngine {
     private requestEdit: (id: string) => void = () => {},
   ) {
     this.audio = new TableAudio(() => this.emit());
-    this.dice = new TableDice((save = true) => this.emit(save));
+    this.dice = new TableDice((save = true) => {
+      if (this.roomActive) {
+        if (save && !this.roomDiceLoading) {
+          try { localStorage.setItem("table-goblin.room-dice.v1", JSON.stringify({ ...this.dice.setup(), sound: this.dice.state.sound, enabled: this.dice.state.enabled, activeGroup: this.dice.state.activeGroup })); } catch {}
+        }
+        for (const dice of this.roomThrows.values()) if (dice.state.sound !== this.dice.state.sound) dice.setSound(this.dice.state.sound);
+        this.refreshRoomDice(); this.emit(false);
+      } else this.emit(save);
+    });
     this.renderer = new Renderer(canvas, () => this.invalidate(), () => this.mediaChanged(), id => {
       const obj = this.scene.objects.find(o => o.id === id);
       if (obj) { obj.paused = true; this.emit(false); }
@@ -263,6 +282,11 @@ export class TableEngine {
     const now = performance.now();
     if (this.dice.step(now, this.camera, this.viewWidth, this.viewHeight))
       this.dirty = true;
+    for (const [id, dice] of this.roomThrows) {
+      if (dice.step(now, this.camera, this.viewWidth, this.viewHeight)) this.dirty = true;
+      if (!dice.state.rolling && !dice.state.visible) { dice.dispose(); this.roomThrows.delete(id); this.refreshRoomDice(); }
+    }
+    if (now >= this.roomDiceNextFinish) { this.refreshRoomDice(); this.emit(false); }
     const hadLaser = this.lasers.length > 0;
     this.lasers = this.lasers.filter((p) => now - p.time < 650);
     if (hadLaser && !this.lasers.length) this.dirty = true;
@@ -318,6 +342,12 @@ export class TableEngine {
         this.gesture?.kind === "marquee" && this.gesture.moved ? this.gesture : undefined,
         this.textBefore ? this.editingId : null,
       );
+      if (this.dice.state.enabled && this.roomThrows.size) {
+        const ctx = this.canvas.getContext("2d")!, dpr = devicePixelRatio || 1;
+        ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        for (const dice of this.roomThrows.values()) dice.draw(ctx, this.camera, this.mood);
+        ctx.restore();
+      }
       this.paintRoomPresence();
       this.dirty = false;
     }
@@ -406,6 +436,17 @@ export class TableEngine {
     }
     this.roomChange = change;
     this.applyRoom(table);
+    this.roomDiceLoading = true;
+    let personal: any;
+    try { personal = JSON.parse(localStorage.getItem("table-goblin.room-dice.v1") || "null"); } catch {}
+    const setup = parseDiceSetup(personal);
+    this.dice.toggle(false);
+    if (setup) this.dice.applySetup(setup);
+    this.dice.setSound(typeof personal?.sound === "boolean" ? personal.sound : this.dice.state.sound);
+    this.dice.toggle(typeof personal?.enabled === "boolean" ? personal.enabled : true);
+    if (setup && typeof personal.activeGroup === "string") this.dice.selectGroup(personal.activeGroup);
+    this.roomDiceLoading = false;
+    this.refreshRoomDice(); this.emit(false);
   }
   setRoomPermissions(gm: boolean, editable: boolean, connected: boolean) {
     this.roomGM = gm; this.roomEditable = editable; this.roomConnected = connected;
@@ -422,6 +463,33 @@ export class TableEngine {
     this.invalidate(); this.emit(false);
   }
   shareObjects(ids: string[], policy: ObjectAccess) { return this.roomShare?.(ids, policy) ?? Promise.resolve(); }
+  setRoomDice(dice: RoomDice, clock: number, roll: (setup: DiceSetup, area: RollArea) => void) {
+    this.roomDice = dice; this.roomDiceClock = clock; this.roomRoll = roll;
+    const now = performance.now() + clock;
+    for (const record of [...dice.rolls].reverse()) {
+      if (this.roomDiceSeen.has(record.id)) continue;
+      this.roomDiceSeen.add(record.id);
+      if (now >= record.startedAt + (record.duration + 4.9) * 1000) continue;
+      const controller = new TableDice(() => { this.refreshRoomDice(); this.emit(false); });
+      this.roomThrows.set(record.id, controller);
+      controller.toggle(true); controller.setSound(this.dice.state.sound); controller.prepareSound(); controller.playShared(record, now);
+    }
+    if (this.roomDiceSeen.size > 512) this.roomDiceSeen = new Set([...this.roomDiceSeen].slice(-256));
+    this.refreshRoomDice(); this.emit(false);
+  }
+  setRoomDiceSending(sending: boolean) { this.roomDiceSending = sending; this.refreshRoomDice(); this.emit(false); }
+  private refreshRoomDice() {
+    if (!this.roomActive) return;
+    const now = performance.now() + this.roomDiceClock, active = this.roomDice.rolls.filter(r => r.startedAt + r.duration * 1000 > now);
+    const history = this.roomDice.rolls.filter(r => r.startedAt + r.duration * 1000 <= now);
+    this.roomDiceNextFinish = active.length ? Math.min(...active.map(r => r.startedAt + r.duration * 1000)) - this.roomDiceClock : Infinity;
+    this.dice.state = { ...this.dice.state, shared: true, sharedRolling: !!active.some(r => r.id === this.roomDice.rolls[0]?.id), currentRoll: this.roomDice.rolls[0],
+      history, result: history[0] ?? null, rolling: this.roomDiceSending || active.some(r => r.actorId === this.roomIdentity), visible: [...this.roomThrows.values()].some(d => d.state.visible) };
+  }
+  clearTableDice() {
+    if (!this.roomActive) { this.dice.clearTable(); return; }
+    for (const dice of this.roomThrows.values()) dice.dispose(); this.roomThrows.clear(); this.refreshRoomDice(); this.emit(false);
+  }
   roomNotice(message: string) { this.notify(message); }
   abortRoomDrag() { this.cancel(); this.emit(false); }
   busyObject(id: string, group = false) {
@@ -492,6 +560,9 @@ export class TableEngine {
   leaveRoom() {
     const backup = this.roomBackup;
     this.roomActive = false; this.roomChange = null; this.roomPeers = [];
+    for (const dice of this.roomThrows.values()) dice.dispose(); this.roomThrows.clear(); this.roomDiceSeen.clear();
+    this.roomDice = emptyRoomDice(); this.roomDiceSending = false; this.roomDiceNextFinish = Infinity; this.roomRoll = null;
+    this.dice.state = { ...this.dice.state, shared: false, sharedRolling: false, currentRoll: undefined, rolling: false };
     this.roomAccess = {}; this.roomLeases = []; this.roomShare = this.roomDrag = this.roomDragEnd = null; this.roomCreating = true;
     this.roomReverse = null; this.roomHistory = { undo: false, redo: false };
     this.roomEditable = this.roomGM = this.roomConnected = true;
@@ -813,6 +884,11 @@ export class TableEngine {
     this.emit();
   }
   rollDice() {
+    if (this.roomActive) {
+      if (!this.roomEditable || !this.roomConnected || !this.roomRoll) { this.notify("Reconnect to the room before rolling dice."); return; }
+      if (!this.dice.state.enabled || this.dice.state.rolling || !Object.values(this.dice.state.pool).some(n => n)) return;
+      this.dice.prepareSound(); this.roomRoll(this.dice.setup(), diceArea(this.camera, this.viewWidth, this.viewHeight)); return;
+    }
     this.dice.roll(this.camera, this.viewWidth, this.viewHeight, this.mood);
   }
   setThickness(width: number) {
@@ -2188,6 +2264,7 @@ export class TableEngine {
     this.media.clear();
     this.audio.dispose();
     this.dice.dispose();
+    for (const dice of this.roomThrows.values()) dice.dispose(); this.roomThrows.clear();
     this.renderer.dispose();
     this.urls.forEach((url) => URL.revokeObjectURL(url));
     this.urls.clear();

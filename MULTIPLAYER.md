@@ -1,6 +1,6 @@
 # Internet playtest plan
 
-The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication and actor-specific Undo/Redo. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; dedicated assets, WebRTC and authoritative shared dice are still future work.
+The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication, actor-specific Undo/Redo and authoritative shared dice. See [ONLINE.md](ONLINE.md) for launch, deployment, supported features, and remaining work. The sections below describe the broader target; dedicated assets and WebRTC are still future work.
 
 ## First playable room
 

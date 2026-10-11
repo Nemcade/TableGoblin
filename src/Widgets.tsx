@@ -339,21 +339,21 @@ export function WidgetDock({
               </div>
               <button
                 className="widget-primary roll-button"
-                disabled={view.dice.rolling || !diceNotation(view.dice.pool)}
+                disabled={view.dice.rolling || !diceNotation(view.dice.pool) || engine.roomActive && (!engine.roomConnected || !engine.roomEditable)}
                 onClick={() => engine.rollDice()}
               >
                 {view.dice.rolling ? "Rolling…" : "Roll dice"}
                 <span aria-hidden="true">↗</span>
               </button>
               <div className="dice-result" aria-live="polite">
-                {view.dice.rolling ? (
-                  <span>Rolling…</span>
+                {view.dice.rolling || view.dice.sharedRolling ? (
+                  <span>{view.dice.sharedRolling && view.dice.currentRoll?.actorName ? `${view.dice.currentRoll.actorName} is rolling…` : "Rolling…"}</span>
                 ) : view.dice.result ? (
                   <>
                     <strong>{view.dice.result.total}</strong>
                     <span>
                       <RollValues record={view.dice.result} mood={view.mood} />
-                      <small>{view.dice.result.notation}</small>
+                      <small>{view.dice.result.actorName && <span className="roll-actor"><i style={{ background: view.dice.result.actorColor }} />{view.dice.result.actorName} · </span>}{view.dice.result.notation}</small>
                     </span>
                   </>
                 ) : (
@@ -407,8 +407,8 @@ export function WidgetDock({
                   <div className="widget-section-heading">
                     RECENT ROLLS
                     <button
-                      disabled={!view.dice.visible || view.dice.rolling}
-                      onClick={() => engine.dice.clearTable()}
+                      disabled={!view.dice.visible || view.dice.rolling || view.dice.sharedRolling}
+                      onClick={() => engine.clearTableDice()}
                     >
                       Clear table dice
                     </button>
@@ -417,6 +417,7 @@ export function WidgetDock({
                     {view.dice.history.slice(0, 6).map((r) => (
                       <li key={r.id}>
                         <span>
+                          {r.actorName && <span className="roll-actor"><i style={{ background: r.actorColor }} />{r.actorName}</span>}
                           {r.notation}
                           <small>
                             <RollValues record={r} mood={view.mood} separator=" · " />

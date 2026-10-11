@@ -3,6 +3,9 @@ import { ROOM_PROTOCOL, readRoomState, sharedSnapshot, type RoomState, type Shar
 import { tableFile } from "./table-storage";
 import { advanceVersions, applyChanges, expectations, operationConflict, tableChanges, type RoomOperation } from "./room-operations";
 import { editsAllowed, hierarchy, type ObjectAccess, type DragLease } from "./room-permissions";
+import { parseRoomDice, validRollReceipts, type RollRequest } from "./room-dice";
+import type { DiceSetup } from "./dice-types";
+import type { RollArea } from "./dice-throw";
 export type RoomStatus = "connected" | "saving" | "offline" | "update-required";
 export class RoomClient {
   state: RoomState;
@@ -24,6 +27,9 @@ export class RoomClient {
   private leasePending = 0;
   private leased = false;
   private leaseTimer: ReturnType<typeof setInterval>;
+  private rollFlight: RollRequest | null = null;
+  private rollPosting = false;
+  private diceClock = -Infinity;
   rejectedDraft: SharedTable | null = null;
   constructor(private engine: TableEngine, state: RoomState,
     private update: (state: RoomState, status: RoomStatus) => void,
@@ -33,8 +39,17 @@ export class RoomClient {
     this.state = decoded;
     this.configurePermissions(false);
     engine.enterRoom(decoded.table, () => this.schedule());
+    if (decoded.protocol === ROOM_PROTOCOL) this.receiveDice(decoded);
     engine.setRoomDrags(this.browser, decoded.leases, ids => this.claimDrag(ids), () => queueMicrotask(() => void this.releaseIdleDrag()));
     this.source = new EventSource(`/api/rooms/${state.id}/events?client=${this.browser}`);
+    this.source.addEventListener("dice", e => {
+      if (this.closed) return;
+      try {
+        this.receiveDice(JSON.parse((e as MessageEvent).data));
+        if (!this.connected) this.online();
+      }
+      catch { this.offline(); this.error("The shared roll could not be read. Reconnect to load the saved room history."); }
+    });
     this.source.addEventListener("leases", e => {
       if (this.closed) return;
       const leases = JSON.parse((e as MessageEvent).data) as DragLease[];
@@ -75,7 +90,7 @@ export class RoomClient {
     void roomRequest(`/api/rooms/${this.state.id}/state`).then(next => this.receiveState(next)).catch(() => this.offline());
   };
   private beforeUnload = (event: BeforeUnloadEvent) => {
-    if (!this.closed && (this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
+    if (!this.closed && (this.rollFlight || this.inFlight || this.flight && !this.flight.acknowledged || tableChanges(this.state.table, this.engine.getRoomTable()).length)) {
       event.preventDefault(); event.returnValue = "";
     }
   };
@@ -89,8 +104,12 @@ export class RoomClient {
     catch { this.offline(); this.error("The room update could not be read. Your current table has been kept intact. Restart the online server and refresh both browsers."); }
   }
   private receiveState(value: unknown) {
-    const next = readRoomState(value, this.state);
+    let next = readRoomState(value, this.state);
     if (!next) { this.offline(); this.error("The room server sent an invalid update. Your current table has been kept intact. Restart the online server and refresh both browsers."); return; }
+    if (next.protocol === ROOM_PROTOCOL) {
+      this.receiveDice(next);
+      if (this.state.dice.sequence > next.dice.sequence) next = { ...next, dice: this.state.dice, diceAccepted: this.state.diceAccepted };
+    }
     if (this.closed || next.revision < this.state.revision) return;
     if (next.protocol !== ROOM_PROTOCOL) {
       this.pending = false; this.state = next; this.connected = navigator.onLine;
@@ -127,6 +146,7 @@ export class RoomClient {
     this.engine.setRoomPresence(next.participants, next.presence, next.me.id);
     this.updateStatus();
     if (this.pending && this.connected && !this.inFlight) this.schedule();
+    if (this.rollFlight && this.connected && !this.rollPosting) void this.submitRoll();
   }
   private keepDraft(message: string) {
     const draft = this.engine.getRoomTable();
@@ -173,7 +193,35 @@ export class RoomClient {
     }
   }
   private updateStatus() {
-    this.update(this.state, !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight ? "saving" : "connected");
+    this.update(this.state, !this.connected ? "offline" : this.state.protocol !== ROOM_PROTOCOL ? "update-required" : this.pending || this.inFlight || this.rollFlight ? "saving" : "connected");
+  }
+  private receiveDice(value: unknown) {
+    if (this.closed || this.state.protocol !== ROOM_PROTOCOL) return;
+    const v = value as Record<string, any>, dice = parseRoomDice(v?.dice);
+    if (!dice || !validRollReceipts(v.diceAccepted, dice.sequence) || !Number.isSafeInteger(v.serverTime) || v.serverTime < 0) throw new Error("Invalid shared dice update");
+    this.diceClock = Math.max(this.diceClock, v.serverTime - performance.now());
+    if (this.rollFlight && v.diceAccepted.some((r: { id: string }) => r.id === this.rollFlight!.id)) { this.rollFlight = null; this.engine.setRoomDiceSending(false); }
+    if (dice.sequence >= this.state.dice.sequence) this.state = { ...this.state, dice, diceAccepted: v.diceAccepted, serverTime: v.serverTime };
+    this.engine.setRoomDice(this.state.dice, this.diceClock, (setup, area) => this.queueRoll(setup, area));
+    this.updateStatus();
+  }
+  private queueRoll(setup: DiceSetup, area: RollArea) {
+    if (this.closed || !this.connected || this.rollFlight || this.rollPosting) return;
+    this.rollFlight = { id: crypto.randomUUID(), setup: structuredClone(setup), area };
+    this.engine.setRoomDiceSending(true); this.updateStatus(); void this.submitRoll();
+  }
+  private async submitRoll() {
+    if (!this.rollFlight || this.rollPosting || !this.connected || this.closed) return;
+    const request = this.rollFlight; this.rollPosting = true;
+    try {
+      const response = await fetch(`/api/rooms/${this.state.id}/rolls`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request), signal: AbortSignal.timeout(15000) });
+      const result = await response.json();
+      if (this.closed) return;
+      if (response.ok) this.receiveDice(result);
+      else if (this.rollFlight?.id === request.id) { this.rollFlight = null; this.engine.setRoomDiceSending(false); this.engine.roomNotice(result.error || "The dice roll could not be saved."); }
+    } catch {
+      if (!this.closed && this.rollFlight?.id === request.id) { this.offline(); this.error("The roll connection was interrupted. Reconnect to check the saved result before rolling again. Your request will be retried without rolling twice."); }
+    } finally { this.rollPosting = false; if (!this.closed) this.updateStatus(); }
   }
   async reconnect() { this.receiveState(await roomRequest(`/api/rooms/${this.state.id}/state`)); }
   private async reverse(redo: boolean) {
@@ -258,6 +306,7 @@ export class RoomClient {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
   async settle() {
+    if (this.rollFlight) throw new Error("Wait for the dice roll to be saved, or reconnect to check its result before leaving.");
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (!this.inFlight && !this.flight && !tableChanges(this.state.table, this.engine.getRoomTable()).length) { this.pending = false; return; }
     if (this.inFlight) throw new Error("Wait for the current room change to finish saving.");

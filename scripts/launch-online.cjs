@@ -10,7 +10,7 @@ function open() {
   execFile(cmd, args, { windowsHide: true }, error => { if (error) console.log(`Open ${url} in your browser.`); });
 }
 (async () => {
-  for (const file of ["dist/index.html", ".server-runtime/room-state.cjs", ".server-runtime/room-operations.cjs", ".server-runtime/room-permissions.cjs"]) if (!fs.existsSync(path.join(project, file)))
+  for (const file of ["dist/index.html", ".server-runtime/room-state.cjs", ".server-runtime/room-operations.cjs", ".server-runtime/room-permissions.cjs", ".server-runtime/room-dice.cjs", ".server-runtime/dice-physics.cjs", ".server-runtime/dice-throw.cjs"]) if (!fs.existsSync(path.join(project, file)))
     throw new Error("The built app is missing. Run npm install and npm run build in this folder first.");
   const { serverBuild } = require("./online-runtime.cjs");
   let response;

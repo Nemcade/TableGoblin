@@ -2513,3 +2513,6 @@ kbd {
 .object-sharing > button { justify-content: space-between; }
 .object-sharing-settings .device-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 1px solid var(--mood-border); border-radius: 6px; }
 .object-sharing-settings button.widget-primary { color: var(--mood-on-accent); background: var(--mood-accent); justify-content: center; }
+.roll-actor { display: inline-flex; align-items: center; gap: 5px; color: var(--mood-muted); font-size: 10px; }
+.roll-actor i { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.roll-history .roll-actor { display: flex; margin-bottom: 3px; }
