@@ -226,7 +226,7 @@ const server = http.createServer(async (req, res) => {
       }
       let me = member(req, room);
       if (action === "state" && req.method === "GET") return json(res, 200, state(room, me));
-      if (action === "live" && req.method === "GET") return json(res, 200, { ...live.snapshot(room), ...live.config() });
+      if (action === "live" && req.method === "GET") return json(res, 200, { ...live.snapshot(room), ...live.config(room, me) });
       if (action === "events" && req.method === "GET") {
         const connections = clients.get(room.id) || new Set();
         if (connections.size >= 48) fail(429, "Too many connections to this room.");

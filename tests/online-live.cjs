@@ -39,6 +39,25 @@ let server, browser;
     assert.equal(await player.evaluate(id => engine.roomLive.canConnect(id), source), false);
     const pixel = await player.evaluate(id => { const c = document.createElement('canvas'); c.width = 160; c.height = 90; const ctx = c.getContext('2d'); ctx.drawImage(engine.media.get(id).video, 0, 0); return [...ctx.getImageData(100, 60, 1, 1).data]; }, source);
     assert.ok(pixel[0] > 180 && pixel[1] < 100, 'Actual WebRTC video frames arrive');
+    let renewals = 0, failRenewal = true;
+    await player.route('**/api/rooms/*/live', async route => {
+      if (route.request().method() !== 'GET') return route.continue();
+      renewals++;
+      if (failRenewal) { failRenewal = false; return route.abort(); }
+      const response = await route.fetch(), value = await response.json();
+      await route.fulfill({ response, json: { ...value, iceExpiresAt: Date.now() + 120000 } });
+    });
+    await player.evaluate(() => { window.existingPeer = [...engine.roomLive.peers.values()][0]; engine.roomLive.configRefreshAt = 0; });
+    await wait(player, () => engine.roomLive.configRetryAt > performance.now());
+    assert.equal(await player.evaluate(() => engine.roomLive.peers.values().next().value === existingPeer && existingPeer.pc.connectionState === 'connected'), true,
+      'A failed credential renewal retains the established media connection');
+    await player.evaluate(() => { engine.roomLive.configRetryAt = 0; });
+    await wait(player, () => engine.roomLive.configRefreshAt > performance.now());
+    assert.equal(renewals, 2);
+    assert.equal(await player.evaluate(() => engine.roomLive.peers.values().next().value === existingPeer && existingPeer.pc.connectionState === 'connected'), true,
+      'Successful credential renewal updates configuration without replacing the peer');
+    await player.unroute('**/api/rooms/*/live');
+    console.log('Live configuration renewal: retry and established media continuity passed.');
     await gm.evaluate(id => engine.duplicate(new Set([id])), source); await wait(player, () => engine.scene.objects.length === 2);
     assert.equal(await player.evaluate(() => engine.roomLive.peers.size), 1, 'Copies share transport');
     await gm.evaluate(id => { engine.scene.objects.find(o => o.id === id).crop = { x: .1, y: .1, width: .7, height: .7 }; client.requestSave(); }, source);

@@ -7,6 +7,7 @@ function serverBuild() {
   for (const file of ["scripts/room-server.cjs", "scripts/room-assets.cjs", "scripts/room-media.cjs", "scripts/online-runtime.cjs", "scripts/dice-service.cjs", "scripts/room-dice-worker.cjs", ".server-runtime/room-state.cjs", ".server-runtime/room-operations.cjs", ".server-runtime/room-permissions.cjs", ".server-runtime/room-dice.cjs", ".server-runtime/room-playback.cjs", ".server-runtime/dice-throw.cjs", ".server-runtime/dice-physics.cjs"])
     hash.update(fs.readFileSync(path.join(root, file)));
   hash.update(fs.readFileSync(path.join(root, "scripts/room-live.cjs")));
+  hash.update(fs.readFileSync(path.join(root, "scripts/room-ice.cjs")));
   return hash.digest("hex");
 }
 module.exports = { serverBuild };

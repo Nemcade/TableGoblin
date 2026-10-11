@@ -5,16 +5,7 @@ const uuid = value => typeof value === 'string' && /^[a-f0-9-]{36}$/i.test(value
 function createLive({ clients, send, broadcast, fail }) {
   const rooms = new Map();
   const instance = randomUUID();
-  let iceServers = [];
-  if (process.env.TABLE_GOBLIN_ICE_SERVERS) {
-    iceServers = JSON.parse(process.env.TABLE_GOBLIN_ICE_SERVERS);
-    if (!Array.isArray(iceServers) || iceServers.length > 8 || iceServers.some(s => !s ||
-      ![s.urls].flat().length || [s.urls].flat().length > 8 ||
-      ![s.urls].flat().every(u => typeof u === 'string' && /^(stun|stuns|turn|turns):[^\s]+$/.test(u)) ||
-      [s.urls].flat().some(u => /^turns?:/.test(u)) && (!s.username || !s.credential) ||
-      [s.username, s.credential].some(v => v !== undefined && (typeof v !== 'string' || v.length > 1024))))
-      throw new Error('TABLE_GOBLIN_ICE_SERVERS must be a JSON array of valid STUN/TURN servers.');
-  }
+  const config = require('./room-ice.cjs').createIce();
   const data = room => {
     if (!rooms.has(room.id)) rooms.set(room.id, { sequence: 0, sources: new Map() });
     return rooms.get(room.id);
@@ -105,6 +96,6 @@ function createLive({ clients, send, broadcast, fail }) {
     send(recipient, 'live-signal', { action: 'signal', source: s.source, generation: s.generation, peer: v.client, connection: v.connection, message });
     return { ok: true };
   }
-  return { snapshot, reconcile, disconnect, request, config: () => ({ iceServers }) };
+  return { snapshot, reconcile, disconnect, request, config };
 }
 module.exports = { createLive };

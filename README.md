@@ -4,6 +4,8 @@ A tabletop for play: colored shapes, image tokens, drawing, physical nesting, li
 
 ## Open the app
 
+For internet hosting, see the [portable deployment package](deploy/README.md). **Prepare Internet Deployment.bat** creates private settings for a Linux server with Docker Compose; hosting is a separate step.
+
 **Double-click `Open Table Goblin.bat`.** The launcher starts a server on your computer and opens your default browser. Keep the terminal window open while using the table; close it to stop. Chrome or Edge is recommended for live capture.
 
 When cloning from GitHub, first run `npm install` and `npm run build` to generate `dist/` and the bundled room server. Once built, the local launcher needs Node.js 22.12 or newer and works without an internet connection. It can also use the Node runtime bundled with Codex. If Node is missing, install it from https://nodejs.org.

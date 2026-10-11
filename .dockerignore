@@ -7,4 +7,7 @@ dist
 room-data
 .env
 .env.*
+**/.env
+**/.env.*
+deploy/backups
 *.log

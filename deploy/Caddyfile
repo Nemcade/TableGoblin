@@ -1,0 +1,8 @@
+{$DOMAIN} {
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy same-origin
+    reverse_proxy app:4180 {
+        # Keep room event streams responsive, including after reconnects.
+        flush_interval -1
+    }
+}

@@ -128,6 +128,8 @@ Reconnects reload authoritative state and rebase unrelated unsent edits. Request
 
 ## Host on the internet
 
+The portable Linux package in [deploy/README.md](deploy/README.md) includes Docker Compose, Caddy HTTPS, persistent room storage, coturn, a configuration generator and backup/playtest instructions. **Prepare Internet Deployment.bat** prepares its private settings from the project folder; it does not publish the app.
+
 The room service serves the app and API together. Deploy one instance behind HTTPS with streaming responses enabled, and keep its room directory on a persistent disk. Session cookies are Secure when `NODE_ENV=production`. There is no cross-origin API; invitations must point to the service's public origin.
 
 | Environment variable | Default | Purpose |
@@ -137,6 +139,10 @@ The room service serves the app and API together. Deploy one instance behind HTT
 | `TABLE_GOBLIN_DATA` | `./room-data` | Persistent private room directory |
 | `NODE_ENV` | unset | Set `production` behind HTTPS |
 | `TABLE_GOBLIN_ICE_SERVERS` | `[]` | Authenticated browser STUN/TURN configuration as JSON |
+| `TABLE_GOBLIN_TURN_URLS` | unset | JSON list of coturn URLs using expiring credentials |
+| `TABLE_GOBLIN_TURN_SECRET` | unset | Server-only signing secret shared with coturn; at least 32 characters |
+
+Set both TURN variables together. Authenticated room members receive individually signed credentials valid for 24 hours; the signing secret stays off browser responses and saved rooms. The client refreshes relay configuration halfway through expiry for future connections. Existing connections are retained; sessions longer than 24 hours may need a feed reconnect. The static ICE setting remains available for a managed relay provider. Revoking room membership immediately blocks new signaling/config requests, but previously issued relay credentials remain valid until expiry.
 
 The included Dockerfile builds the app and bundles the server validation code, then runs the service as an unprivileged user. Mount a persistent volume at `/data`. Its production container expects HTTPS at the public reverse proxy. `GET /api/health` is the health endpoint. Room JSON files contain private invitations and credential hashes: keep them on the private volume, back them up, and never serve that directory as static content. `.gitignore` and `.dockerignore` exclude room data and environment files.
 
@@ -156,5 +162,7 @@ Online tests use separate browser contexts and an isolated temporary room direct
 Identity and navigation checks cover self-only profile updates, durable profile versions, stale tabs, unchanged ownership/entity versions, live labels/colors, reconnect retries, unfinished typing/gestures, different viewport aspect ratios, independent cameras and local camera restoration.
 
 `test:live` uses its own temporary server and three independent browser contexts. It checks actual received camera pixels and audio waveforms, source changes/aspect ratios, crops and copies, late joins, browser refresh, receive retries, permission checks, personal listening, ephemeral signaling, player publishing/removal, last-copy deletion and room leave. Production UI checks use simulated capture devices, keeping real hardware and permission pickers untouched. Unit tests also reject oversized or forged signals and stale connections. Cross-network TURN and physical-device checks remain manual.
+
+`test:deploy` checks coturn-compatible signing/expiry, per-member credentials, invalid configuration, non-overwriting setup, production secure cookies, authenticated credential reads, removed-member rejection, restart recovery and exclusion of signing secrets/relay credentials from saved rooms. Live tests also cover configuration renewal/retry without replacing an established media connection. Docker/HTTPS/public relay checks are separate steps in the deployment guide.
 
 File-media checks cover private uploads, format/truncation rejection, byte-range playback, ownership, removed sessions and interrupted uploads, real WAV/audio-only MP4/WebM/MP4 decoding, shared transport through remote edits, personal listening, crop/copy behavior, refresh/restart, compact commands and portable/recovery exports. Playback checks cover owner/editor authorization, independent object versions/undo, stale controls, locks, durable retry receipts, commands interrupted by removal, delayed HTTP replies, lost acknowledgements, sound rejection/retry, drift correction, single-command seeks and non-looping end/replay.

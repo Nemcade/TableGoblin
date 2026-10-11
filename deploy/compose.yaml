@@ -1,0 +1,81 @@
+name: table-goblin
+
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      TABLE_GOBLIN_TURN_SECRET: ${TURN_SECRET:?Run the deployment setup first}
+      TABLE_GOBLIN_TURN_URLS: '["turn:${DOMAIN:?Set DOMAIN}:3478?transport=udp","turn:${DOMAIN}:3478?transport=tcp"]'
+    volumes:
+      - rooms:/data
+    # Only the proxy can reach the app; its HTTP port is not published.
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4180/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+  turn:
+    image: coturn/coturn:4.18.0-r0-alpine
+    restart: unless-stopped
+    # Linux host networking avoids port-range NAT and preserves relay addresses.
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-ip=0.0.0.0
+      - --listening-port=3478
+      - --relay-ip=${RELAY_IP:?Set RELAY_IP}
+      - --external-ip=${TURN_EXTERNAL_IP:?Set TURN_EXTERNAL_IP}
+      - --realm=${DOMAIN:?Set DOMAIN}
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:?Run the deployment setup first}
+      - --fingerprint
+      - --min-port=49160
+      - --max-port=49415
+      - --user-quota=64
+      - --total-quota=512
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --no-tcp-relay
+      # Relay only to public peers; do not make this a route to host services.
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=224.0.0.0-255.255.255.255
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+volumes:
+  rooms:
+  certificates:
+  caddy_config:

@@ -32,6 +32,7 @@ export class RoomLive {
   private configured = false;
   private configuring = false;
   private configRetryAt = 0;
+  private configRefreshAt = Infinity;
   private iceServers: RTCIceServer[] = [];
   private soundEnabled = false;
   private listening = new Map<string, { muted: boolean; volume: number; blocked: boolean }>();
@@ -42,7 +43,7 @@ export class RoomLive {
     void this.configure();
   }
   private async configure() {
-    if (this.configuring || this.configured || this.disposed || performance.now() < this.configRetryAt) return;
+    if (this.configuring || this.configured && performance.now() < this.configRefreshAt || this.disposed || performance.now() < this.configRetryAt) return;
     this.configuring = true;
     try {
       const v = await this.request();
@@ -52,6 +53,9 @@ export class RoomLive {
       // relay settings must not throw from the background subscription loop.
       const probe = new RTCPeerConnection({ iceServers }); probe.close();
       this.iceServers = iceServers;
+      this.configRefreshAt = Number.isFinite(v.iceExpiresAt)
+        ? performance.now() + Math.max(60_000, (v.iceExpiresAt - Date.now()) / 2) : Infinity;
+      for (const peer of this.peers.values()) peer.pc.setConfiguration({ iceServers });
       this.configured = true; this.receive(v);
     } catch (error) {
       this.configRetryAt = performance.now() + 5000;
@@ -169,6 +173,7 @@ export class RoomLive {
   }
   private async sync() {
     if (this.disposed || !this.connected) return;
+    if (performance.now() >= this.configRefreshAt) void this.configure();
     if (!this.configured) { void this.configure(); return; }
     const local = new Map<string, { stream: MediaStream; kind: LiveSource["kind"]; label: string }>();
     for (const [source, media] of this.engine.media) if (!media.remote && media.stream.getVideoTracks().some(t => t.readyState === "live")) {
