@@ -23,6 +23,7 @@ class HttpError extends Error { constructor(status, message, code) { super(messa
 const fail = (status, message, code) => { throw new HttpError(status, message, code); };
 const artwork = require("./room-assets.cjs").createAssets(data, fail);
 const mediaFiles = require("./room-media.cjs").createMedia(data, fail);
+const live = require("./room-live.cjs").createLive({ clients, send, broadcast, fail });
 const json = (res, status, value) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); res.end(JSON.stringify(value)); };
 function body(req) {
   return new Promise((resolve, reject) => {
@@ -136,6 +137,7 @@ function checkLeases(room, me, client, changes) {
   if (conflict) fail(409, `${room.members.find(m => m.id === conflict.actor)?.name || "Another player"} is moving this object. Try again when they finish.`);
 }
 function publishTable(room, actor, operationId) {
+  live.reconcile(room);
   for (const c of clients.get(room.id) || []) send(c, "table", { ...state(room, room.members.find(m => m.id === c.id)), actor, operationId });
 }
 function trimHistory(history) {
@@ -202,7 +204,7 @@ const server = http.createServer(async (req, res) => {
         persist(room); rooms.set(room.id, room); setCookie(res, room, token);
         return json(res, 201, state(room, room.members[0]));
       }
-      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage|profile|playback)$/);
+      const match = url.pathname.match(/^\/api\/rooms\/([a-z0-9]{16})\/(state|join|events|table|operations|undo|redo|presence|permissions|access|leases|rolls|manage|profile|playback|live)$/);
       if (!match) fail(404, "Endpoint not found.");
       const room = load(match[1]), action = match[2];
       if (action === "join" && req.method === "POST") {
@@ -224,15 +226,17 @@ const server = http.createServer(async (req, res) => {
       }
       let me = member(req, room);
       if (action === "state" && req.method === "GET") return json(res, 200, state(room, me));
+      if (action === "live" && req.method === "GET") return json(res, 200, { ...live.snapshot(room), ...live.config() });
       if (action === "events" && req.method === "GET") {
         const connections = clients.get(room.id) || new Set();
         if (connections.size >= 48) fail(429, "Too many connections to this room.");
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
         const client = { id: me.id, client: url.searchParams.get("client"), res }; connections.add(client); clients.set(room.id, connections);
-        send(client, "state", state(room, me)); broadcastPeople(room);
+        send(client, "state", state(room, me)); send(client, "live", live.snapshot(room)); broadcastPeople(room);
         const heartbeat = setInterval(() => res.write(": keepalive\n\n"), 15000);
         res.on("close", () => {
           clearInterval(heartbeat); connections.delete(client);
+          live.disconnect(room, me.id, client.client);
           if (![...connections].some(c => c.id === me.id)) presence.get(room.id)?.delete(me.id);
           if (![...connections].some(c => c.id === me.id && c.client === client.client)) {
             const held = leases.get(room.id)?.get(client.client);
@@ -246,6 +250,10 @@ const server = http.createServer(async (req, res) => {
       rate(req, `commands:${room.id}:${me.id}`, 1200);
       const v = await body(req);
       me = member(req, room); // Credentials may have been revoked while reading the body.
+      if (action === "live") {
+        rate(req, `live:${room.id}:${me.id}`, 600);
+        return json(res, 200, live.request(room, me, v));
+      }
       if (action === "playback") {
         const request = parsePlaybackRequest(v);
         if (!request) fail(400, "Choose a valid media control and a finite duration/position (up to seven days).");

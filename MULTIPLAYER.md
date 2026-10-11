@@ -1,6 +1,6 @@
 # Internet playtest plan
 
-The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication, actor-specific Undo/Redo, authoritative shared dice, private artwork and audio/video file storage. See [ONLINE.md](ONLINE.md) for current behavior and [ROADMAP.md](ROADMAP.md) for progress. File playback is personal; shared playback timing and WebRTC are the next transport milestones.
+The `feature/online-rooms` branch includes a working room prototype with object ownership/sharing, temporary drag claims, versioned operations, retry deduplication, actor-specific Undo/Redo, authoritative shared dice, private artwork and audio/video file storage, shared file playback and WebRTC live sources. See [ONLINE.md](ONLINE.md) for current behavior and [ROADMAP.md](ROADMAP.md) for progress. Listening preferences remain personal. Hosted HTTPS/TURN setup and a real group playtest are next.
 
 ## First playable room
 
@@ -8,7 +8,7 @@ A host creates a room and shares a join link. A player enters a display name and
 
 The prototype uses Node HTTP requests for authenticated mutations and server-sent events for room updates and presence. It requires no extra runtime dependencies. The room server owns shared state and validates versioned changes to individual objects, freehand strokes and widgets. Independent edits merge; overlapping object and hierarchy edits are rejected. Reconnects load an authoritative snapshot, recognize accepted retries and rebase unrelated unsent edits. The service uses a single server and still broadcasts full snapshots.
 
-Keep the first playtest to 2–6 participants, static images, shapes, drawing, nesting, grid, rulers, and dice. That is enough to test whether the shared-table interactions feel good before adding live media transport.
+Keep the first playtest to 2–6 participants, static images, shapes, drawing, nesting, grid, rulers, and dice. Then include file playback and live media in the same group session.
 
 ## Identity and presence
 
@@ -48,9 +48,9 @@ Artwork and audio/video files now use content-addressed files and room-authorize
 
 ## Live sources and deployment
 
-Serve online rooms over HTTPS, with secure WebSocket transport. Camera and microphone access requires a secure context outside the localhost development exception. [MDN capture requirements](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
+Serve online rooms over HTTPS, with authenticated same-origin HTTP/SSE signaling. Camera and microphone access requires a secure context outside the localhost development exception. [MDN capture requirements](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
 
-After shared objects are reliable, use WebRTC for screen, camera, virtual camera, and audio tracks. The room server handles signaling and permission to publish/subscribe. Reliable connections across home networks need a TURN relay; transport setup and operating costs must be decided before a media playtest. A small peer mesh is a reasonable initial experiment; an SFU may be needed as participant count or video load grows. [WebRTC signaling](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Signaling_and_video_calling), [TURN guidance](https://webrtc.org/getting-started/turn-server).
+WebRTC now carries screen, camera, virtual camera and audio tracks in local multi-browser tests. The room server handles signaling and permission to publish/subscribe. Reliable connections across home networks need a TURN relay; transport setup and operating costs must be decided before a media playtest. A small peer mesh is a reasonable initial experiment; an SFU may be needed as participant count or video load grows. [WebRTC signaling](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Signaling_and_video_calling), [TURN guidance](https://webrtc.org/getting-started/turn-server).
 
 Do not expose the current localhost file server as an internet session server. Deploy the authenticated room service and assets together behind HTTPS after a local two-browser test. Choose a hosting region and media budget before public deployment.
 
@@ -61,7 +61,7 @@ Do not expose the current localhost file server as an internet session server. D
 3. **Shared utilities:** authoritative dice, host atmosphere/grid/obscure controls, personal presets, and collaboration-aware undo. Test late joining, missed events, zoom differences, and reconnect while rolling.
 4. **Uploaded media:** private audio/video storage, browser decoding, bounded uploads, range downloads, copies and portable exports. Implemented.
 5. **Shared playback:** authorized room play/pause/restart/seek/loop, late-join timing and browser sound permission, with personal listening volume/mute. Implemented.
-6. **Live media:** WebRTC signaling, TURN configuration, source lifecycle and sharing permissions, audio mute/monitoring, and subscription cleanup. Test OBS, screen/tab audio, reconnection, and the final viewer leaving a stream.
+6. **Live media:** WebRTC signaling, configurable ICE/TURN, source lifecycle and sharing permissions, audio mute/monitoring, and subscription cleanup. Implemented and locally tested. Physical OBS/screen/tab-audio pickers and different networks remain manual playtest checks.
 7. **Internet playtest:** deploy an invitation-only room over HTTPS; test 2–6 people on different networks. Verify saved-room recovery, permission feedback, pointer latency, file media and live transport. Hosting choices can be prepared earlier; the full feature demo requires this final group test.
 
 See [ROADMAP.md](ROADMAP.md) for the current completion status and next milestones.

@@ -59,6 +59,7 @@ import { roomImage, inlineRoomArtwork } from "./room-artwork";
 import { roomMedia, roomMediaLimit, inlineRoomMedia } from "./room-media";
 import { type PlaybackRequest, type RoomPlayback } from "./room-playback";
 import { RoomFilePlayer } from "./room-player";
+import type { RoomLive } from "./room-live";
 import {
   defaultGrid,
   defaultObscure,
@@ -172,6 +173,7 @@ export class TableEngine {
   candidate: string | null = null;
   gesture: Gesture | null = null;
   media = new Map<string, Media>();
+  roomLive: RoomLive | null = null;
   lasers: LaserPoint[] = [];
   hover: Point | null = null;
   undoStack: Scene[] = [];
@@ -409,8 +411,8 @@ export class TableEngine {
       thickness: this.thickness,
       smoothing: this.smoothing,
       mood: { ...this.mood },
-      audioCount: this.audio.count + this.scene.objects.filter(o => o.audio).length,
-      roomSoundNeeded: this.roomActive && this.roomPlayer.needsSound,
+      audioCount: this.audio.count + this.scene.objects.filter(o => o.audio).length + (this.roomLive?.remoteAudio().length ?? 0),
+      roomSoundNeeded: this.roomSoundNeeded,
       dice: this.dice.state,
       grid: { ...this.grid },
       obscure: { ...this.obscure },
@@ -485,8 +487,8 @@ export class TableEngine {
     this.roomPlaybackSending = false; this.roomPlaybackControl = null; this.emit(false);
   }
   refreshPlaybackUI() { this.emit(false); }
-  enableRoomSound() { this.roomPlayer.enable(); }
-  get roomSoundNeeded() { return this.roomActive && this.roomPlayer.needsSound; }
+  enableRoomSound() { this.roomPlayer.enable(); this.roomLive?.enableSound(); }
+  get roomSoundNeeded() { return this.roomActive && (this.roomPlayer.needsSound || !!this.roomLive?.needsSound); }
   roomFileMuted(obj: Surface) { return this.roomPlayer.isMuted(obj); }
   setRoomFileMuted(obj: Surface, muted: boolean) { this.roomPlayer.mute(obj, muted); this.roomPlayer.tick(); this.emit(false); }
   roomFilePosition(obj: Surface) { return this.roomPlayer.position(obj); }
@@ -803,7 +805,7 @@ export class TableEngine {
       if (this.roomActive) {
         if (!this.roomManageAllowed()) return;
         const table = parseSharedTable(saved.snapshot, true);
-        if (!table) { this.notify("This room can import artwork, text, drawings and media files. Remove live capture sources first."); return; }
+        if (!table) { this.notify("This room can import artwork, text, drawings and media files. Check the source references and media files."); return; }
         if ((this.scene.objects.length || this.scene.strokes.length) && !window.confirm("Replace the room table with this file? Everyone in the room will see the imported table.")) return;
         this.materializeMedia(table.scene.objects, saved.assets);
         this.applyRoom(table); this.emit(); this.notify("Table imported into the room. Your local table is unchanged."); return;
@@ -843,7 +845,7 @@ export class TableEngine {
     }
     if (this.roomActive && !parseSharedTable(this.getRoomTable(), true)) {
       this.scene = before; this.cleanSelection(); this.emit(false);
-      this.notify("This source cannot be shared. Use artwork, audio or video files; live streams will follow."); return;
+      this.notify("This source cannot be shared. Use readable artwork, media files or a live screen/camera surface."); return;
     }
     if (!this.roomActive && JSON.stringify(before) !== JSON.stringify(this.scene)) {
       this.undoStack.push(before);
@@ -1177,7 +1179,7 @@ export class TableEngine {
   }
   stopAllAudio() {
     this.audio.clear();
-    if (this.roomActive) { this.roomPlayer.silence(); this.roomPlayer.tick(); this.emit(false); return; }
+    if (this.roomActive) { this.roomLive?.silence(); this.roomPlayer.silence(); this.roomPlayer.tick(); this.emit(false); return; }
     const before = clone(this.scene);
     for (const obj of this.scene.objects) if (obj.audio) {
       obj.paused = true;
@@ -1465,7 +1467,7 @@ export class TableEngine {
       this.notify("Drop an image, GIF, video or audio file.");
   }
   async addScreen(targetId?: string) {
-    if (this.roomActive) { this.notify("Live capture is currently available on local tables. Room streaming will follow."); return; }
+    if (!this.liveConnectAllowed(targetId)) return;
     if (!navigator.mediaDevices?.getDisplayMedia) {
       this.notify(
         "Screen sharing needs a browser with capture support, on localhost. Try Chrome or Edge.",
@@ -1491,7 +1493,7 @@ export class TableEngine {
     }
   }
   async addCamera(stream: MediaStream, name: string, targetId?: string) {
-    if (this.roomActive) { stream.getTracks().forEach(t => t.stop()); this.notify("Camera sharing in rooms will follow."); return; }
+    if (!this.liveConnectAllowed(targetId)) { stream.getTracks().forEach(t => t.stop()); throw new Error("Source connection needs ownership or GM permission."); }
     await this.connectLive(stream, "camera", name || stream.getVideoTracks()[0]?.label || "Live camera", targetId);
   }
   private async connectLive(stream: MediaStream, kind: "screen" | "camera", name: string, targetId?: string) {
@@ -1506,9 +1508,11 @@ export class TableEngine {
       if (this.disposed || !track || track.readyState === "ended")
         throw new Error("Source stopped before it could be connected.");
       const target = targetId ? this.scene.objects.find(o => o.id === targetId) : undefined;
+      if (!this.liveConnectAllowed(targetId)) throw new Error("Source permissions changed while connecting.");
       if (targetId && (!target || target.kind !== kind))
         throw new Error("The original surface is no longer available.");
       const obj = target ?? this.add(kind);
+      if (!this.scene.objects.some(o => o.id === obj.id)) throw new Error("The source could not be placed on this table.");
       if (!target) obj.width = kind === "camera" ? 420 : 520;
       const key = obj.sourceId ?? obj.id, previous = this.media.get(key);
       const item = { video, stream };
@@ -1525,6 +1529,7 @@ export class TableEngine {
         let changed = false;
         for (const surface of this.scene.objects) {
           if ((surface.sourceId ?? surface.id) !== key) continue;
+          if (this.roomActive && this.roomAccess[`object:${surface.id}`] && !this.objectEditable(surface.id, true)) continue;
           if (surface.sourceWidth === sw && surface.sourceHeight === sh) continue;
           const crop = surface.crop ?? { x: 0, y: 0, width: 1, height: 1 };
           surface.sourceWidth = sw;
@@ -1562,6 +1567,7 @@ export class TableEngine {
     }
   }
   async addDisplayAudio() {
+    if (!this.creationAllowed()) throw new Error("The GM must allow adding sources first.");
     if (!navigator.mediaDevices?.getDisplayMedia)
       throw new Error(
         "Tab and computer audio capture needs Chrome or Edge on localhost.",
@@ -1578,6 +1584,7 @@ export class TableEngine {
     } as DisplayMediaStreamOptions & { systemAudio: string });
     try {
       if (this.disposed) throw new Error("The table has closed.");
+      if (!this.creationAllowed()) throw new Error("Source permissions changed while connecting.");
       if (!stream.getAudioTracks().length)
         throw new Error(
           "No audio was shared. Choose a tab or entire screen and enable Share audio in the browser picker. Available sources depend on your browser and system.",
@@ -1593,6 +1600,7 @@ export class TableEngine {
     }
   }
   async addInputAudio(deviceId: string) {
+    if (!this.creationAllowed()) throw new Error("The GM must allow adding sources first.");
     if (!navigator.mediaDevices?.getUserMedia)
       throw new Error("Audio inputs are unavailable in this browser.");
     this.audio.prepare();
@@ -1607,6 +1615,7 @@ export class TableEngine {
     });
     try {
       if (this.disposed) throw new Error("The table has closed.");
+      if (!this.creationAllowed()) throw new Error("Source permissions changed while connecting.");
       this.audio.add(
         stream,
         stream.getAudioTracks()[0]?.label || "Audio input",
@@ -1619,6 +1628,7 @@ export class TableEngine {
   }
   stopScreen(id: string) {
     const key = this.scene.objects.find((o) => o.id === id)?.sourceId ?? id;
+    if (this.roomLive) { void this.roomLive.stop(key); return; }
     const item = this.media.get(key);
     if (item) {
       this.media.delete(key);
@@ -1627,6 +1637,14 @@ export class TableEngine {
       this.emit();
       this.notify("Live source stopped.");
     }
+  }
+  private liveConnectAllowed(id?: string) {
+    if (!this.roomActive) return true;
+    if (!id) return this.creationAllowed();
+    const obj = this.scene.objects.find(o => o.id === id);
+    if (obj && this.roomLive?.canConnect(obj.sourceId ?? obj.id)) return true;
+    this.notify("Only the source owner or GM can reconnect it. A source shared in another browser must be stopped there first.");
+    return false;
   }
   selectForContext(point: Point) {
     this.cancel();

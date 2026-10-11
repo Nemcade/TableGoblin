@@ -341,7 +341,7 @@ export function AudioPanel({
             ×
           </button>
         </div>
-        {engine.roomActive && <p className="widget-note">Playback and loop are shared. The GM, owner or shared editors control them; mute and volume are personal.</p>}
+        {engine.roomActive && <p className="widget-note">Files follow room playback. Live inputs are shared while connected. Listening volume is personal; muting your input silences it for the room.</p>}
         {engine.roomSoundNeeded && <button className="room-sound-enable" onClick={() => engine.enableRoomSound()}>Enable room sound</button>}
         <button className="audio-display" onClick={() => audioFiles.current?.click()}>＋ Audio file <span>Music, ambience, sound effects, or an audio-only MP4</span></button>
         <input ref={audioFiles} type="file" aria-label="Import audio files" accept="audio/*,.mp4,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.webm" multiple hidden onChange={e => { void engine.addFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
@@ -404,8 +404,20 @@ export function AudioPanel({
             {error}
           </p>
         )}
+        {!!engine.roomLive?.remoteAudio().length && <div className="audio-sources" role="region" aria-label="Shared live audio">
+          {engine.roomLive.remoteAudio().map(s => <article className="audio-source" key={s.source}>
+            <div className="audio-source-heading"><div><strong>{s.label}</strong><small>{s.name} · {s.status}</small></div>
+              <button onClick={() => engine.roomLive?.retry(s.source)}>Retry connection</button>
+              {engine.roomGM && <button onClick={() => void engine.roomLive?.stop(s.source)}>Stop sharing</button>}
+            </div>
+            <div className="audio-source-controls">
+              <button aria-pressed={s.muted} aria-label={`${s.muted ? "Unmute" : "Mute"} ${s.label} for me`} onClick={() => engine.roomLive?.listen(s.source, { muted: !s.muted })}>{s.muted ? "Unmute for me" : "Mute for me"}</button>
+              <label className="audio-volume">Volume<input aria-label={`${s.label} live volume`} type="range" min="0" max="100" value={s.volume * 100} onChange={e => engine.roomLive?.listen(s.source, { volume: Number(e.target.value) / 100 })} /><span>{Math.round(s.volume * 100)}%</span></label>
+            </div>
+          </article>)}
+        </div>}
         <div className="audio-sources">
-          {!sources.length && !fileSources.length ? (
+          {!sources.length && !fileSources.length && !engine.roomLive?.remoteAudio().length ? (
             <div className="audio-empty">
               No audio sources connected.
               <small>Add a source to begin.</small>
@@ -418,6 +430,7 @@ export function AudioPanel({
                     <strong>{s.name}</strong>
                     <small>
                       {s.kind === "display" ? "Tab / computer" : "Audio input"}
+                      {engine.roomActive ? engine.roomLive?.owns(s.id) ? " · shared with room" : " · connecting…" : ""}
                     </small>
                   </div>
                   <button
@@ -491,7 +504,7 @@ export function AudioPanel({
           Local listening starts off to avoid feedback or playing a tab twice.
           Sources stay connected when you close this panel. Imported files start paused.
         </p>
-        {(sources.length > 0 || fileSources.length > 0) && (
+        {(sources.length > 0 || fileSources.length > 0 || !!engine.roomLive?.remoteAudio().length) && (
           <div className="capture-actions">
             <button
               onClick={() => {
@@ -499,7 +512,7 @@ export function AudioPanel({
                 setSources([]);
               }}
             >
-              {engine.roomActive ? "Mute room files for me" : "Stop all audio"}
+              {engine.roomActive ? "Stop my inputs & mute room audio" : "Stop all audio"}
             </button>
             <button className="primary" onClick={onClose}>
               Done

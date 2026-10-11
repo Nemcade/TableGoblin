@@ -13,7 +13,7 @@ import { roomMedia } from "./room-media.ts";
 import { emptyRoomPlayback, parseRoomPlayback, validPlaybackReceipts, type RoomPlayback } from "./room-playback.ts";
 
 export type SharedTable = Pick<TableSnapshot, "scene" | "mood" | "grid" | "obscure">;
-export const ROOM_PROTOCOL = 9;
+export const ROOM_PROTOCOL = 10;
 export type Participant = { id: string; name: string; color: string; role: "gm" | "player"; online: boolean; profileVersion?: number };
 export const validParticipant = (p: any): p is Participant => p && typeof p.id === "string" && typeof p.name === "string" && /^#[0-9a-f]{6}$/i.test(p.color) && ["gm", "player"].includes(p.role) && typeof p.online === "boolean" &&
   (p.profileVersion === undefined || Number.isSafeInteger(p.profileVersion) && p.profileVersion >= 0);
@@ -75,7 +75,9 @@ export function parseSharedTable(value: unknown, allowLocalMedia = false): Share
   // Local uploads are accepted only for client-side rebasing. The API boundary
   // always requires private room references, never blobs or external URLs.
   const mediaRef = (ref: unknown) => !!roomMedia(ref) || allowLocalMedia && typeof ref === "string" && /^(blob:|asset:)/.test(ref);
-  if (table.scene.objects.some(o => !o || typeof o !== "object" || ["camera", "screen"].includes(o.kind) || o.sourceId ||
+  if (table.scene.objects.some(o => !o || typeof o !== "object" ||
+    (o.sourceId !== undefined && (!["camera", "screen"].includes(o.kind) || typeof o.sourceId !== "string" || !/^[a-f0-9-]{36}$/i.test(o.sourceId))) ||
+    (["camera", "screen"].includes(o.kind) && (!/^[a-f0-9-]{36}$/i.test(o.id) || o.image || o.video || o.audio)) ||
     (o.video !== undefined && (o.kind !== "video" || o.audio !== undefined || !mediaRef(o.video))) ||
     (o.audio !== undefined && (o.kind !== "audio" || o.video !== undefined || !mediaRef(o.audio))) ||
     (o.kind === "video" && !o.video || o.kind === "audio" && !o.audio) ||

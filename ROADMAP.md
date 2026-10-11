@@ -1,6 +1,6 @@
 # Table Goblin demo roadmap
 
-The local tabletop demo and the core shared-room demo work. The remaining work is mainly media transport and testing on real internet connections. A full feature demo means the existing tabletop tools, file media and live sources can be used together by a small invited group; it does not require accounts, game rules or public room discovery.
+The local tabletop demo and the core shared-room demo work. Live media now works in local multi-browser tests; the remaining work is hosting and testing on real internet connections. A full feature demo means the existing tabletop tools, file media and live sources can be used together by a small invited group; it does not require accounts, game rules or public room discovery.
 
 ## Completed
 
@@ -9,13 +9,14 @@ The local tabletop demo and the core shared-room demo work. The remaining work i
 - GM room controls: confirmed invitation replacement and player removal, preserved objects and transferred ownership, rejected stale requests and revoked sessions.
 - Uploaded audio/video files: private stored references, bounded uploads, browser decoding checks, byte-range downloads, refresh/restart, copies, crops, portable exports/imports and rejected-upload recovery.
 - Shared file playback: authorized play/pause/restart/seek/loop, independent playback versions and retry receipts, room playhead recovery, late joins, personal mute/volume and explicit sound permission.
+- Live sources: authenticated directed WebRTC signaling for cameras/OBS, screens and captured audio, shared surface copies/crops, source replacement/reconnect, late joins, personal listening, ownership checks, revocation and connection cleanup. Verified in independent local browser contexts; public network/relay testing remains.
 
 ## Next milestones
 
-1. **Live sources.** Add authenticated WebRTC signaling and publishing/subscribing for cameras, OBS virtual cameras, screens and audio. Preserve the current source/crop controls, reconnect/source replacement and cleanup across copies. Test locally before relying on public networking.
-2. **Hosted playtest and polish.** Choose hosting, configure HTTPS and persistent room storage, configure TURN for live media across home networks, then test with 2–6 people on different networks. Check reconnects, saved-room recovery, source changes, pointer latency and browser differences. Fix the issues found before calling the full feature demo ready.
+1. **Hosted setup.** Choose hosting, configure HTTPS and persistent room storage, then configure and verify TURN using the new ICE server setting.
+2. **Group playtest and polish.** Test with 2–6 people on different networks, including Brave and physical camera/OBS/screen/audio pickers. Check reconnects, saved-room recovery, source changes, pointer latency and browser differences. Fix the issues found before calling the full feature demo ready.
 
-The main remaining engineering milestone is live media; hosting and a real group playtest are still required to verify internet readiness. Docker/deployment files exist, but no public service or TURN relay has been deployed. Public hosting needs a chosen service and any associated cost approved by the owner.
+The core feature implementation is complete for a local online demo. Hosting, relay verification and a real group playtest are still required to verify internet readiness. Docker/deployment files include the live signaling service, but no public service or TURN relay has been deployed. Public hosting needs a chosen service and any associated cost approved by the owner.
 
 ## Later, if playtests justify it
 

@@ -22,6 +22,7 @@ export class TableAudio {
   get count() {
     return this.sources.size;
   }
+  stream(id: string) { return this.sources.get(id)?.stream; }
   prepare() {
     this.context ??= new AudioContext();
     void this.context.resume().catch(() => {});

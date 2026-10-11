@@ -9,6 +9,7 @@ import type { RollArea } from "./dice-throw";
 import { roomImage, roomImageLimit } from "./room-artwork";
 import { roomMedia, roomMediaLimit, roomMediaTypes } from "./room-media";
 import { parseRoomPlayback, validPlaybackReceipts, type PlaybackRequest } from "./room-playback";
+import { RoomLive } from "./room-live";
 class ArtworkRejected extends Error {}
 export type RoomStatus = "connected" | "saving" | "offline" | "update-required" | "removed";
 class RoomRequestError extends Error {
@@ -38,6 +39,7 @@ export class RoomClient {
   private presenceInFlight = false;
   private warnedVersion = false;
   private browser = crypto.randomUUID();
+  private live: RoomLive | null = null;
   private leaseWork: Promise<void> = Promise.resolve();
   private leasePending = 0;
   private leased = false;
@@ -63,6 +65,15 @@ export class RoomClient {
     if (decoded.protocol === ROOM_PROTOCOL) this.receivePlayback(decoded);
     engine.setRoomDrags(this.browser, decoded.leases, ids => this.claimDrag(ids), () => queueMicrotask(() => void this.releaseIdleDrag()));
     this.source = new EventSource(`/api/rooms/${state.id}/events?client=${this.browser}`);
+    if (decoded.protocol === ROOM_PROTOCOL) this.live = new RoomLive(engine, decoded, this.browser, () => this.remove());
+    this.source.addEventListener("live", e => {
+      if (this.inactive) return;
+      try { this.live?.receive(JSON.parse((e as MessageEvent).data)); } catch { this.offline(); }
+    });
+    this.source.addEventListener("live-signal", e => {
+      if (this.inactive) return;
+      try { this.live?.handle(JSON.parse((e as MessageEvent).data)); } catch { this.offline(); }
+    });
     this.source.addEventListener("removed", () => this.remove());
     this.source.addEventListener("playback", e => {
       if (this.inactive) return;
@@ -118,6 +129,7 @@ export class RoomClient {
   private offline = () => {
     if (this.inactive || !this.connected) return;
     this.connected = false;
+    this.live?.update(this.state, false);
     this.configurePermissions(false);
     this.update(this.state, "offline");
   };
@@ -139,6 +151,7 @@ export class RoomClient {
     this.engine.setRoomDrags(this.browser, []); this.engine.setRoomPresence([], [], this.state.me.id);
     this.engine.setRoomDiceSending(false);
     this.engine.clearRoomPlayback();
+    this.live?.close(); this.live = null;
     this.updateStatus();
     this.error("The GM removed you from this room. Your local table is still saved separately.");
   }
@@ -156,6 +169,7 @@ export class RoomClient {
     this.engine.setRoomAccess(this.state.me.id, this.state.playerEditing, this.state.access, this.state.participants, (ids, policy) => this.share(ids, policy));
     this.engine.setRoomPermissions(supported && this.state.me.role === "gm", supported, connected);
     this.engine.roomPlaybackControl = supported ? (object, action, patch) => this.controlPlayback(object, action, patch) : null;
+    this.live?.update(this.state, supported && connected);
   }
   private receiveEvent(event: Event) {
     if (this.inactive) return;
@@ -577,6 +591,7 @@ export class RoomClient {
     if (this.pending || !this.connected) throw new Error("The room is offline. Rejoin or export your current table before leaving.");
   }
   close() {
+    this.live?.close(); this.live = null;
     this.engine.clearRoomPlayback();
     this.closed = true; this.source.close(); clearInterval(this.presenceTimer); clearInterval(this.leaseTimer);
     if (!this.removed) void fetch(`/api/rooms/${this.state.id}/leases`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "release", client: this.browser }), keepalive: true }).catch(() => {});

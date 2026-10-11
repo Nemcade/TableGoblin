@@ -12,6 +12,7 @@
     "build": "tsc --noEmit && vite build && node scripts/build-server.cjs",
     "start:online": "node scripts/launch-online.cjs",
     "test:online": "npm run build && node tests/online.cjs",
+    "test:live": "npm run build && node tests/online-live.cjs",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "test:browser": "npm run build && node tests/browser.cjs"
   },

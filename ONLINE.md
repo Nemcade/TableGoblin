@@ -38,12 +38,13 @@ Both controls are checked by the server and persisted atomically. Recent retries
 
 - Shapes, text, raster images (PNG/JPG/WebP/GIF), artwork masks, nesting, object transforms, drawings, deletion, and locks.
 - Uploaded audio/video file objects, their crops, and synchronized play/pause/restart/seek/loop. Listening volume and mute are personal.
+- Live screens, cameras/OBS virtual cameras and captured audio, using authenticated WebRTC connections. Live feed crops, placement and copies use the same shared objects.
 - GM mood, grid and visual Obscure edits. GM cover opacity stays local to the GM's view.
 - Colored selection outlines and laser points with participant names. Presence is transient; stale laser points expire and disconnected participants' selections disappear.
 - Durable room contents, roles, identities and object ownership/sharing. Server restart preserves them.
 - Dice throws, their color groups, participant names, and the last 12 results. Everyone sees the same physical throw in world coordinates.
 
-Pan/zoom, current selection, pen preferences, rulers, preset libraries, dice selection/colors and sound preferences remain personal. Live audio/video transport is a subsequent stage. The Obscure cover remains a visual mask; room members receive the underlying content.
+Pan/zoom, current selection, pen preferences, rulers, preset libraries, dice selection/colors and listening preferences remain personal. Live sources are shared while their publishing browser is connected. The Obscure cover remains a visual mask; room members receive the underlying content.
 
 ## Room audio and video files
 
@@ -51,7 +52,7 @@ Drop an MP4, WebM, MP3, WAV, Ogg, FLAC or AAC file, or use **Add → Audio file*
 
 Files upload to private room storage before the object is saved. Each file is limited to 64 MB, with at most 512 MB and 512 distinct files per room. Two media uploads can run at once. These limits are separate from the artwork limits. Matching bytes reuse one stored file; object moves and copies send only references. Wait for **Room connected** after importing media. Interrupted uploads retry; permanently rejected uploads retain **Export unsent edit**, including the pending file bytes.
 
-Everyone in the room can load files. The GM, owner and shared editors can Play/Pause, Restart, Seek and Loop a file for the room, including on locked objects. A compact progress slider appears in the audio panel and the object's right-click menu; dragging previews a position and releasing sends one control. Viewers see playback status but their transport controls are disabled. Volume and **Mute/Unmute for me** stay personal; **Mute room files for me** silences your listening without pausing anyone else. Personal listening preferences survive unrelated edits and reset on refresh. Audio starts paused; videos initially loop muted.
+Everyone in the room can load files. The GM, owner and shared editors can Play/Pause, Restart, Seek and Loop a file for the room, including on locked objects. A compact progress slider appears in the audio panel and the object's right-click menu; dragging previews a position and releasing sends one control. Viewers see playback status but their transport controls are disabled. Volume and **Mute/Unmute for me** stay personal; **Stop my inputs & mute room audio** silences your listening without pausing anyone else. Personal listening preferences survive unrelated edits and reset on refresh. Audio starts paused; videos initially loop muted.
 
 When room audio is playing, **Enable room sound** appears beside the header's audio button or inside the open audio panel. This gives the browser a deliberate listening action. A blocked browser can retry there without changing room playback. Video sound can be enabled through **Unmute for me** in its right-click menu. One person's browser refusing sound never pauses the room.
 
@@ -64,6 +65,20 @@ The same object ownership rules apply to moving, cropping, nesting, deleting and
 Media downloads require room authentication, including byte-range seeking, HEAD and conditional-cache requests. Removed sessions cannot fetch more file data. Already downloaded or buffered bytes cannot be recalled from a browser. The server checks container structure and declared types; each browser performs codec decoding. A rejected or unavailable file can be deleted by an authorized object editor.
 
 Files live under `room-data/media/<room-id>/` and survive server restarts. Files remain after deleting an object so undo and recovery still work; unused-file cleanup is a later task. Back up the entire room-data directory. After removal, **Export unsent edit** preserves edits, pending local media bytes and private file references as recovery data; it cannot fetch inaccessible room files.
+
+## Live screens, cameras and audio
+
+Use **Add → Live screen**, **Camera / virtual camera**, or **Audio source**. Camera and screen surfaces use the header's existing **Live feeds** menu for Crop, Change source, Stop and Reconnect. The owner or GM can connect a stopped surface; an active capture must be replaced in the browser sharing it. A different GM browser can stop it first. Shared editors can edit permitted surface geometry/crops without taking over its capture. Copies reuse one feed connection per receiving browser. Cancelling a replacement keeps the previous feed.
+
+The audio panel lists your captured inputs and other participants' live audio. Your input's mute silences it for the room; **Listen locally** and its volume affect your own monitoring. Received streams have **Mute for me**, personal volume and Retry connection. **Enable room sound** grants listening permission for files and live audio. Cameras/screens send video only; share an audio source separately when desired. Browser support determines which tab/system audio sources can be selected.
+
+Adding sources needs GM or player creation permission. Connecting a video source needs source ownership or GM permission. Stopping someone else's source needs GM permission. Removing a player closes their publishing and receiving connections. Revoking player creation permission stops their live audio inputs; source ownership changes are rechecked. Deleting the last surface copy stops its capture. Leaving the room, losing the room connection or reloading stops your captures; camera/screen placeholders and crops remain, with Reconnect available. Captured audio is session-only and is added again through the audio panel. Nothing starts capturing automatically after refresh.
+
+The initial transport is a small peer mesh: eight sources per room, four per publishing browser. Signaling uses authenticated same-origin POST/SSE, is directed to participating browsers, validates connection generations and bounded SDP/ICE, and is kept out of room files and undo. The server retains source descriptors only while their publishing browser is connected. Failed receiving connections retry a few times and then expose Retry connection. Private capture device IDs are never sent to the room server.
+
+For internet testing, configure `TABLE_GOBLIN_ICE_SERVERS` with a JSON array of RTC ICE servers, for example `[{"urls":"stun:your-relay.example:3478"},{"urls":["turn:your-relay.example:3478?transport=udp","turns:your-relay.example:5349?transport=tcp"],"username":"playtest-user","credential":"relay-password"}]`. Set it in the server environment and restart the service. These are placeholders, not a deployed relay. Configuration is returned only to authenticated room members. Relay credentials are intended for their browsers: use restricted playtest credentials and rotate them with your relay operator. Do not commit real credentials.
+
+The default ICE list is empty for local browser tests; public STUN/TURN services are not silently selected. HTTPS and a working TURN relay must be configured and tested before relying on different home networks. Three independent local browser contexts pass real WebRTC video/audio transport tests, but physical devices, browser pickers, Brave and cross-network relay behavior still need a manual group playtest. See [WebRTC peer connections](https://webrtc.org/getting-started/peer-connections) and [TURN configuration](https://webrtc.org/getting-started/turn-server).
 
 ## Identity and finding each other
 
@@ -121,6 +136,7 @@ The room service serves the app and API together. Deploy one instance behind HTT
 | `HOST` | `127.0.0.1` | Use `0.0.0.0` on a hosting service |
 | `TABLE_GOBLIN_DATA` | `./room-data` | Persistent private room directory |
 | `NODE_ENV` | unset | Set `production` behind HTTPS |
+| `TABLE_GOBLIN_ICE_SERVERS` | `[]` | Authenticated browser STUN/TURN configuration as JSON |
 
 The included Dockerfile builds the app and bundles the server validation code, then runs the service as an unprivileged user. Mount a persistent volume at `/data`. Its production container expects HTTPS at the public reverse proxy. `GET /api/health` is the health endpoint. Room JSON files contain private invitations and credential hashes: keep them on the private volume, back them up, and never serve that directory as static content. `.gitignore` and `.dockerignore` exclude room data and environment files.
 
@@ -131,11 +147,14 @@ Playtest limits: 1,000 objects, 8 MB per table update, 24 current participants, 
 ```powershell
 npm test
 npm run test:online
+npm run test:live
 npm run test:browser
 ```
 
 Online tests use separate browser contexts and an isolated temporary room directory. They check ownership, editor grants, protected groups, locked-map tokens, sharing revocation, forged requests, same-piece grab races and claim cleanup, independent edits, actor Undo/Redo, lost acknowledgements and late responses, active dragging/typing/drawing during incoming updates, old-room migration, restart persistence, identity refresh, presence, reconnect and preservation of the local table. Room controls cover confirmation/cancel, invitation rotation, duplicate names, synchronized GM tabs, transferred ownership, cleared grants, revoked connections and artwork reads, requests/uploads/dice already in progress, unsent-edit recovery, retries and restart persistence. Dice checks cover simultaneous rolls, server-chosen grouped results, matching physical poses at different zoom levels, active reconnect, expired playback, lost roll acknowledgements, personal preferences and the production widget UI. Artwork checks cover large maps, authenticated caching, format/size/foreign-reference rejection, upload races/retries, GIF animation, masked/nested copies, portable export/import, compact operations and backed-up migration.
 
 Identity and navigation checks cover self-only profile updates, durable profile versions, stale tabs, unchanged ownership/entity versions, live labels/colors, reconnect retries, unfinished typing/gestures, different viewport aspect ratios, independent cameras and local camera restoration.
+
+`test:live` uses its own temporary server and three independent browser contexts. It checks actual received camera pixels and audio waveforms, source changes/aspect ratios, crops and copies, late joins, browser refresh, receive retries, permission checks, personal listening, ephemeral signaling, player publishing/removal, last-copy deletion and room leave. Production UI checks use simulated capture devices, keeping real hardware and permission pickers untouched. Unit tests also reject oversized or forged signals and stale connections. Cross-network TURN and physical-device checks remain manual.
 
 File-media checks cover private uploads, format/truncation rejection, byte-range playback, ownership, removed sessions and interrupted uploads, real WAV/audio-only MP4/WebM/MP4 decoding, shared transport through remote edits, personal listening, crop/copy behavior, refresh/restart, compact commands and portable/recovery exports. Playback checks cover owner/editor authorization, independent object versions/undo, stale controls, locks, durable retry receipts, commands interrupted by removal, delayed HTTP replies, lost acknowledgements, sound rejection/retry, drift correction, single-command seeks and non-looping end/replay.

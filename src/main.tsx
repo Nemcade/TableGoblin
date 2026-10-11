@@ -948,7 +948,7 @@ function App() {
                 <p>
                   Paste art into a selected shape to make a token. Drop images,
                   GIFs or videos. Double-click to frame art or crop a source.
-                  Your live screen stays local to this browser.
+                  Live sources are shared with participants in an online room.
                 </p>
               </article>
               <article>

@@ -40,7 +40,7 @@ import type {
 } from "./table-widgets";
 import type { TableDice } from "./dice";
 export type Camera = { x: number; y: number; zoom: number };
-export type Media = { video: HTMLVideoElement; stream: MediaStream };
+export type Media = { video: HTMLVideoElement; stream: MediaStream; remote?: boolean };
 export type LaserPoint = Point & { time: number; start?: boolean };
 export const handles = [
   { x: -0.5, y: -0.5 },

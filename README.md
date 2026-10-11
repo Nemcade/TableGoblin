@@ -1,6 +1,6 @@
 # Table Goblin
 
-A tabletop for play: colored shapes, image tokens, drawing, physical nesting, live screens/cameras, audio sources, looping video/GIF surfaces, atmosphere, and optional dice/grid/obscure widgets. No accounts or game rules. This branch also includes an online room playtest with shared objects, colored presence, permissions and shared physical dice; see [ONLINE.md](ONLINE.md).
+A tabletop for play: colored shapes, image tokens, drawing, physical nesting, live screens/cameras, audio sources, looping video/GIF surfaces, atmosphere, and optional dice/grid/obscure widgets. No accounts or game rules. This branch also includes online rooms with shared objects, colored presence, permissions, shared physical dice, synchronized file playback and WebRTC live sources; see [ONLINE.md](ONLINE.md).
 
 ## Open the app
 
