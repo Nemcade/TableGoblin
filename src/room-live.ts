@@ -146,7 +146,7 @@ export class RoomLive {
     return this.sources.filter(s => s.kind === "audio" && s.browser !== this.browser).map(s => ({ ...s,
       ...this.preference(s.source), status: this.status(s.source) }));
   }
-  get needsSound() { return this.remoteAudio().some(s => !s.muted && (!this.soundEnabled || s.blocked)); }
+  get needsSound() { return this.remoteAudio().some(s => s.status === "Live" && !s.muted && (!this.soundEnabled || s.blocked)); }
   private preference(id: string) {
     if (!this.listening.has(id)) this.listening.set(id, { muted: false, volume: .65, blocked: false });
     return this.listening.get(id)!;

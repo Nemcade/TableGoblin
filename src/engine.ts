@@ -43,6 +43,7 @@ import { BrushSampler } from "./brush";
 import { defaultText, textBox, textMode, textFonts, textRuns, validText, type TextSettings } from "./text";
 import { waitForMediaData } from "./video-source";
 import { TableAudio } from "./audio";
+import { RemoteLaser, paintLaser, laserLifetime } from "./laser";
 import { defaultMood, type Mood } from "./mood";
 import { isHexColor } from "./colors.ts";
 import { parseSharedTable, sharedSnapshot, type SharedTable, type Participant, type Presence } from "./room-state";
@@ -213,6 +214,9 @@ export class TableEngine {
   roomPlaybackControl: ((object: string, action: PlaybackRequest["action"], patch: { duration: number; position?: number; loop?: boolean }) => void) | null = null;
   private roomPlayer = new RoomFilePlayer(() => queueMicrotask(() => this.emit(false)));
   private roomPlayerTick = 0;
+  private audioActivityTick = 0;
+  private roomLasers = new Map<string, RemoteLaser>();
+  private roomLaserColor = "#f68b6a";
   private roomHistory = { undo: false, redo: false };
   private roomReverse: ((redo: boolean) => void) | null = null;
   private roomPeers: { person: Participant; presence?: Presence }[] = [];
@@ -294,6 +298,13 @@ export class TableEngine {
   private tick = () => {
     if (this.disposed) return;
     const now = performance.now();
+    let remoteLaserVisible = false;
+    for (const laser of this.roomLasers.values()) if (laser.step(now)) remoteLaserVisible = true;
+    let audioActivity = false;
+    if (now - this.audioActivityTick >= 80) {
+      this.audioActivityTick = now;
+      for (const e of this.renderer.audios.values()) if (!e.audio.paused && !e.audio.ended && e.audio.readyState >= 3) { audioActivity = true; break; }
+    }
     if (this.roomActive && now - this.roomPlayerTick > 250) { this.roomPlayerTick = now; this.roomPlayer.tick(); this.emit(false); }
     if (this.dice.step(now, this.camera, this.viewWidth, this.viewHeight))
       this.dirty = true;
@@ -303,7 +314,7 @@ export class TableEngine {
     }
     if (now >= this.roomDiceNextFinish) { this.refreshRoomDice(); this.emit(false); }
     const hadLaser = this.lasers.length > 0;
-    this.lasers = this.lasers.filter((p) => now - p.time < 650);
+    this.lasers = this.lasers.filter((p) => now - p.time < laserLifetime);
     if (hadLaser && !this.lasers.length) this.dirty = true;
     if (this.gesture?.kind === "laser" && this.hover) {
       const last = this.lasers.at(-1);
@@ -313,6 +324,7 @@ export class TableEngine {
     }
     if (
       this.dirty ||
+      remoteLaserVisible || audioActivity ||
       (this.mood.motion !== "still" &&
         this.mood.amount > 0 &&
         this.mood.speed > 0 &&
@@ -356,6 +368,7 @@ export class TableEngine {
         },
         this.gesture?.kind === "marquee" && this.gesture.moved ? this.gesture : undefined,
         this.textBefore ? this.editingId : null,
+        this.roomActive ? this.roomLaserColor : "#f68b6a",
       );
       if (this.dice.state.enabled && this.roomThrows.size) {
         const ctx = this.canvas.getContext("2d")!, dpr = devicePixelRatio || 1;
@@ -626,7 +639,7 @@ export class TableEngine {
   leaveRoom() {
     this.roomPlayer.clear(); this.roomPlaybackControl = null; this.roomPlaybackSending = false;
     const backup = this.roomBackup;
-    this.roomActive = false; this.roomId = ""; this.roomChange = null; this.roomPeers = [];
+    this.roomActive = false; this.roomId = ""; this.roomChange = null; this.roomPeers = []; this.roomLasers.clear();
     for (const dice of this.roomThrows.values()) dice.dispose(); this.roomThrows.clear(); this.roomDiceSeen.clear();
     this.roomDice = emptyRoomDice(); this.roomDiceSending = false; this.roomDiceNextFinish = Infinity; this.roomRoll = null;
     this.dice.state = { ...this.dice.state, shared: false, sharedRolling: false, currentRoll: undefined, rolling: false };
@@ -641,7 +654,16 @@ export class TableEngine {
     this.emit(false);
   }
   setRoomPresence(participants: Participant[], entries: Presence[], me: string) {
+    this.roomLaserColor = participants.find(p => p.id === me)?.color ?? "#f68b6a";
     this.roomPeers = participants.filter(p => p.id !== me && p.online).map(person => ({ person, presence: entries.find(p => p.id === person.id) }));
+    const now = performance.now(), ids = new Set(this.roomPeers.map(p => p.person.id));
+    for (const id of this.roomLasers.keys()) if (!ids.has(id)) this.roomLasers.delete(id);
+    for (const { person, presence } of this.roomPeers) {
+      let laser = this.roomLasers.get(person.id);
+      if (!laser && !presence?.laser) continue;
+      if (!laser) { laser = new RemoteLaser(); this.roomLasers.set(person.id, laser); }
+      laser.update(presence?.laser ?? null, now, presence?.seen);
+    }
     this.invalidate();
   }
   getRoomPresence(): Omit<Presence, "id"> {
@@ -667,7 +689,7 @@ export class TableEngine {
   }
   private paintRoomPresence() {
     if (!this.roomActive || !this.roomPeers.length) return;
-    const ctx = this.canvas.getContext("2d")!, dpr = devicePixelRatio || 1;
+    const ctx = this.canvas.getContext("2d")!, dpr = Math.min(devicePixelRatio || 1, 2);
     ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.font = "12px system-ui"; ctx.lineWidth = 2;
     for (const { person, presence } of this.roomPeers) {
@@ -679,12 +701,13 @@ export class TableEngine {
         ctx.setLineDash([5, 4]); ctx.strokeRect(-t.width * this.camera.zoom / 2 - 4, -t.height * this.camera.zoom / 2 - 4, t.width * this.camera.zoom + 8, t.height * this.camera.zoom + 8);
         ctx.setLineDash([]); ctx.fillText(person.name + (this.roomLeases.some(l => l.actor === person.id && l.objects.includes(id)) ? " · moving" : ""), -t.width * this.camera.zoom / 2, -t.height * this.camera.zoom / 2 - 10); ctx.restore();
       }
-      if (presence?.laser) {
-        const x = presence.laser.x * this.camera.zoom + this.camera.x, y = presence.laser.y * this.camera.zoom + this.camera.y;
-        ctx.shadowColor = person.color; ctx.shadowBlur = 12;
-        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0; ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.stroke();
-        ctx.fillText(person.name, x + 17, y - 12);
+      const points = this.roomLasers.get(person.id)?.points ?? [], head = points.at(-1);
+      if (head) {
+        paintLaser(ctx, points, this.camera, person.color, performance.now());
+        const alpha = Math.max(0, 1 - (performance.now() - head.time) / laserLifetime);
+        const x = head.x * this.camera.zoom + this.camera.x, y = head.y * this.camera.zoom + this.camera.y;
+        ctx.globalAlpha = alpha;
+        ctx.fillText(person.name, x + 17, y - 12); ctx.globalAlpha = 1;
       }
     }
     ctx.restore();

@@ -63,13 +63,16 @@ let server, browser, data;
     window.musicStartedAt = audio.currentTime; window.checkStartedAt = performance.now();
   }, audio);
   for (let i = 0; i < 24; i++) {
-    await gm.evaluate(i => {
+    await gm.evaluate(async i => {
       if (i % 4 === 0) engine.addShape('circle');
       else { const object = engine.scene.objects.at(-1); object.x += 15; client.requestSave(); }
+      // Force distinct acknowledged edits. Under load the normal debounce may
+      // correctly combine several moves, which is not a playback failure.
+      await client.settle();
     }, i);
     await new Promise(r => setTimeout(r, 180));
   }
-  await wait(player, () => delivered >= 20);
+  await wait(player, () => delivered >= 24);
   const result = await player.evaluate(() => ({ seeks, delivered, maximumDelay: Math.max(...delays), elapsed: (performance.now() - checkStartedAt) / 1000,
     progress: music.currentTime - musicStartedAt, ready: music.readyState, paused: music.paused, muted: music.muted, sequence: client.state.playback.sequence }));
   assert(result.maximumDelay >= 1000, 'The listener really received queued updates');

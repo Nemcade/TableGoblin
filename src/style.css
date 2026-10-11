@@ -2533,7 +2533,11 @@ kbd {
 .roll-actor { display: inline-flex; align-items: center; gap: 5px; color: var(--mood-muted); font-size: 10px; }
 .roll-actor i { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .roll-history .roll-actor { display: flex; margin-bottom: 3px; }
-.room-sound-enable { padding: 8px 10px; border: 1px solid var(--mood-border); border-radius: 9px; background: var(--mood-panel); color: var(--mood-ink); font-size: 11px; }
+.room-sound-enable { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--mood-accent); border-radius: 9px; background: var(--mood-accent); color: var(--mood-on-accent); font-size: 11px; text-align: left; box-shadow: 0 3px 14px #0002; }
+.room-sound-enable span { display: flex; flex-direction: column; gap: 2px; }
+.room-sound-enable strong { font-size: 11px; font-weight: 600; }
+.room-sound-enable small { font-size: 10px; opacity: .8; }
+@media (max-width: 760px) { .room-sound-enable { position: fixed; left: 12px; bottom: 192px; z-index: 20; } }
 .room-file-controls { display: grid; gap: 8px; padding: 8px 0 0; }
 .room-file-timeline { display: flex; align-items: center; gap: 8px; color: var(--mood-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .room-file-timeline input { min-width: 30px; flex: 1; accent-color: var(--mood-accent); }

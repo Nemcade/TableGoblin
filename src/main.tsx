@@ -443,7 +443,9 @@ function App() {
               />
             )}
           </div>
-          {view.roomSoundNeeded && capturePanel !== "audio" && <button className="room-sound-enable" onClick={() => engine.current?.enableRoomSound()}>Enable room sound</button>}
+          {view.roomSoundNeeded && capturePanel !== "audio" && <button className="room-sound-enable" aria-label="Enable room sound" onClick={() => engine.current?.enableRoomSound()}>
+            <Icon name="audio" size={18} /><span><strong>Enable room sound</strong><small>Room audio available</small></span>
+          </button>}
           <button
             className={`icon-button audio-button ${view.audioCount ? "active" : ""}`}
             onClick={() => {

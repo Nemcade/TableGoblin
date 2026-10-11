@@ -19,6 +19,7 @@ import { AnimatedGif } from "./animated-gif";
 import { paintText, textMode } from "./text";
 import { mediaState, videoState, videoLoadTimeout } from "./video-source";
 import { withAlpha } from "./colors";
+import { paintLaser, type LaserPoint } from "./laser";
 import {
   defaultMood,
   themePalette,
@@ -41,7 +42,7 @@ import type {
 import type { TableDice } from "./dice";
 export type Camera = { x: number; y: number; zoom: number };
 export type Media = { video: HTMLVideoElement; stream: MediaStream; remote?: boolean };
-export type LaserPoint = Point & { time: number; start?: boolean };
+export type { LaserPoint } from "./laser";
 export const handles = [
   { x: -0.5, y: -0.5 },
   { x: 0, y: -0.5 },
@@ -210,7 +211,7 @@ function mediaPlaceholder(ctx: CanvasRenderingContext2D, obj: Surface, w: number
   fittedLabel(ctx, message, 0, 17 * scale, 12 * scale, palette.muted, w - 28 * scale);
   ctx.textAlign = "left";
 }
-function audioTile(ctx: CanvasRenderingContext2D, obj: Surface, w: number, h: number, message: string, mood: Mood) {
+function audioTile(ctx: CanvasRenderingContext2D, obj: Surface, w: number, h: number, message: string, mood: Mood, media?: HTMLAudioElement) {
   const palette = themePalette(mood), button = audioButton(obj, w, h), s = button.scale;
   ctx.fillStyle = palette.panel; ctx.fillRect(-w / 2, -h / 2, w, h);
   ctx.fillStyle = palette.accent; ctx.beginPath(); ctx.arc(button.x, 0, button.radius, 0, Math.PI * 2); ctx.fill();
@@ -219,8 +220,18 @@ function audioTile(ctx: CanvasRenderingContext2D, obj: Surface, w: number, h: nu
     ctx.beginPath(); ctx.moveTo(button.x - 4 * s, -7 * s); ctx.lineTo(button.x + 7 * s, 0); ctx.lineTo(button.x - 4 * s, 7 * s); ctx.fill();
   } else { ctx.fillRect(button.x - 6 * s, -7 * s, 4 * s, 14 * s); ctx.fillRect(button.x + 2 * s, -7 * s, 4 * s, 14 * s); }
   const x = -w / 2 + 74 * s;
-  fittedLabel(ctx, obj.filename ?? obj.name, x, -5 * s, 14 * s, palette.ink, w - 92 * s);
-  fittedLabel(ctx, message, x, 17 * s, 11 * s, palette.muted, w - 92 * s);
+  const active = !!media && !media.paused && !media.ended && !media.error && media.readyState >= 3;
+  fittedLabel(ctx, obj.filename ?? obj.name, x, -5 * s, 14 * s, palette.ink, w - 122 * s);
+  fittedLabel(ctx, message, x, 17 * s, 11 * s, palette.muted, w - 122 * s);
+  // A playback indicator, not a fabricated level meter. Its phase follows the
+  // decoded playhead, so buffering and pause stop the motion naturally.
+  ctx.fillStyle = active ? palette.accent : palette.muted;
+  ctx.globalAlpha = active ? .85 : .4;
+  for (let i = 0; i < 5; i++) {
+    const height = active ? (4 + 10 * (.5 + .5 * Math.sin(media!.currentTime * 5 + i * 1.7))) * s : 3 * s;
+    ctx.beginPath(); ctx.roundRect(w / 2 - (30 - i * 5) * s, -height / 2, 2.5 * s, height, 1.2 * s); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 }
 function mapArt(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.save();
@@ -504,6 +515,7 @@ export class Renderer {
         this.changed(); this.invalidate();
       };
       audio.onloadeddata = change; audio.onerror = change;
+      audio.onwaiting = change; audio.onplaying = change; audio.onpause = change;
       audio.onended = () => { if (this.audios.get(obj.id) === target && !this.roomTransport?.(obj, audio)) this.audioStopped(obj.id); };
       entry = target; this.audios.set(obj.id, entry);
     }
@@ -587,6 +599,7 @@ export class Renderer {
     },
     marquee?: { start: Point; end: Point },
     hiddenTextId: string | null = null,
+    laserColor = "#f68b6a",
   ) {
     const ctx = this.canvas.getContext("2d")!;
     const dpr = Math.min(devicePixelRatio, 2);
@@ -661,7 +674,7 @@ export class Renderer {
       if (obj.kind === "text") { if (obj.id !== hiddenTextId) paintText(ctx, obj, scene, mood); }
       else if (obj.kind === "audio") {
         const entry = this.audios.get(obj.id), issue = this.fileIssue(obj);
-        audioTile(ctx, obj, t.width, t.height, issue ?? entry?.playError ?? (obj.paused !== false ? "Audio · paused" : "Audio · playing"), mood);
+        audioTile(ctx, obj, t.width, t.height, issue ?? entry?.playError ?? (obj.paused !== false ? "Audio · paused" : "Audio · playing"), mood, entry?.audio);
       }
       else if (source) drawContent(ctx, obj, source, t.width, t.height);
       else if (
@@ -753,30 +766,7 @@ export class Renderer {
       }
     }
     const now = performance.now();
-    for (let i = 0; i < laser.length; i++) {
-      const p = laser[i],
-        alpha = Math.max(0, 1 - (now - p.time) / 650);
-      if (!alpha) continue;
-      const a = screenPoint(p, camera);
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = "#f3a18c";
-      ctx.lineWidth = 3;
-      ctx.shadowColor = "#f68b6a";
-      ctx.shadowBlur = 10;
-      if (i > 0 && !p.start) {
-        const b = screenPoint(laser[i - 1], camera);
-        ctx.beginPath();
-        ctx.moveTo(b.x, b.y);
-        ctx.lineTo(a.x, a.y);
-        ctx.stroke();
-      }
-      if (i === laser.length - 1) {
-        ctx.fillStyle = "#ffe2c5";
-        ctx.beginPath();
-        ctx.arc(a.x, a.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+    paintLaser(ctx, laser, camera, laserColor, now);
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";

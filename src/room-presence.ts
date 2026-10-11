@@ -3,7 +3,7 @@ import type { Point } from "./model.ts";
 
 /** Visible world area, independent of a participant's screen size. */
 export type RoomView = { x: number; y: number; width: number; height: number };
-export type Presence = { id: string; selection: string[]; laser: Point | null; view?: RoomView | null };
+export type Presence = { id: string; selection: string[]; laser: Point | null; view?: RoomView | null; seen?: number };
 const coordinate = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && Math.abs(n) < 1e7;
 export function validRoomView(value: unknown): value is RoomView {
   const v = value as RoomView | null;

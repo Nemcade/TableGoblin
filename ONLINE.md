@@ -26,6 +26,10 @@ Browser identities and GM credentials use persistent, HttpOnly cookies scoped to
 
 Invitation entry focuses on joining rather than showing room-creation fields. A name or nickname is explicitly required. Clicking Join without one shows an inline explanation and focuses the name field; Enter submits once a valid name is entered. Empty invitation links also get visible feedback. Busy controls show Joining/Creating and prevent repeated submissions.
 
+Local and remote lasers now share the same glow and fading trail, using participant identity colors. Remote movement is smoothed between presence updates, and inactive/disconnected pointers clear without becoming saved drawings. Color changes apply to active pointers immediately. The receiver's own zoom and display density determine where the world-space pointer appears.
+
+Audio-file tiles show a small animated playback indicator. It follows the decoded playhead, rather than pretending to measure loudness, and becomes still when paused or buffering. When room audio is available but listening has not been enabled, a prominent **Enable room sound** prompt appears beside the desktop audio controls (in a lower corner on narrow screens). It affects only your listening session and does not change playback for others. Failed/connecting live audio does not trigger the prompt until connected.
+
 ## Invitations and participants
 
 The GM's **Online** popup contains **Copy invitation** and **Replace invitation**. Replacement asks for confirmation, invalidates previous invitation links, and updates the link in every connected GM tab. Players already in the room keep their identities and connections.
