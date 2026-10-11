@@ -25,6 +25,8 @@ It enables Google's public STUN service, the address-discovery endpoint shown in
 
 Direct media will not work on every network. Funnel carries the app, shared objects and uploaded files, but does not act as a live-media relay. If a feed still fails, report which side says it is connecting/failed and whether camera, screen and microphone behave differently. The next step is a TURN relay, rather than changes to object permissions. We have not yet verified this discovery setting with physical devices on different internet connections.
 
+An incognito window or an automated tester on the same computer is useful for checking a separate player identity, permissions, file playback and joining. We also received live video in an invited tester browser through the Funnel address on the host computer. These checks do not exercise different routers/firewalls: a player on another internet connection is still needed to verify cross-network live media.
+
 Music synchronization now keeps a stable clock across delayed room messages, gently corrects small timing differences and avoids repeated seeks during buffering. Explicit pause/seek/restart controls and larger drift recovery remain supported. This has been tested using real OGG playback with queued room updates, but your friend's connection is the next real-world check.
 
 For permanent hosting later, see [deploy/README.md](deploy/README.md). You can leave **Prepare Internet Deployment.bat** alone during this home test.

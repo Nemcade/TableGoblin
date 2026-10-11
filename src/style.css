@@ -2500,6 +2500,9 @@ kbd {
 .room-panel label { display: flex; flex-direction: column; gap: 7px; font-size: 11px; color: var(--mood-muted); }
 .room-panel input:not([type="checkbox"]):not([type="color"]) { width: 100%; min-width: 0; padding: 9px 10px; background: var(--mood-panel); color: var(--mood-ink); border: 1px solid var(--mood-border); border-radius: 7px; }
 .room-panel .color-control input.color-hex { width: 86px; }
+.room-field-help { font-size: 11px; line-height: 1.45; color: var(--mood-muted); }
+.room-field-help.invalid { color: var(--mood-ink); font-weight: 600; }
+.room-panel input[aria-invalid="true"] { border-color: var(--mood-accent); }
 .room-error { font-size: 12px; line-height: 1.5; color: var(--mood-ink); padding: 10px; border: 1px solid var(--mood-border); border-radius: 7px; margin: 0; }
 .room-role, .room-people > div { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .room-role small, .room-people small { margin-left: auto; color: var(--mood-muted); font-size: 10px; }

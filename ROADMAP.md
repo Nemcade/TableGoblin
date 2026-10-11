@@ -12,6 +12,8 @@ The local tabletop demo and the core shared-room demo work. The first real inter
 - Live sources: authenticated directed WebRTC signaling for cameras/OBS, screens and captured audio, shared surface copies/crops, source replacement/reconnect, late joins, personal listening, ownership checks, revocation and connection cleanup. Verified in independent local browser contexts; public network/relay testing remains.
 - Portable deployment preparation: Linux Docker Compose stack, HTTPS proxy, persistent volumes, coturn with expiring member credentials, private configuration generator, backup/recovery instructions and isolated credential/API checks. Container startup and public networking remain to be verified on the target host.
 - First home-hosted internet playtest: shared objects/images, permissions and dice worked through Funnel. Remote OGG stuttering led to a stable playback clock and gentle drift correction, verified with real OGG and delayed updates. An opt-in Windows launcher now enables free STUN discovery; cross-network live media remains unverified.
+- Invited tester session through the actual Funnel address: player entry, artwork, owned shape creation/movement/undo, shared dice and identity restoration checked. The tester received live video frames and uninterrupted OGG playback during edits. This browser ran on the host computer, so it does not substitute for a different-network live-media test.
+- Join usability: invitations focus on joining, required names have explicit guidance, missing names/links show inline feedback and focus the field, Enter joins/creates, and busy feedback prevents repeated requests. Verified in desktop/mobile layouts and through the real invitation page.
 
 ## Next milestones
 

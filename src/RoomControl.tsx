@@ -9,12 +9,15 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [title, setTitle] = useState("Shared table"), [link, setLink] = useState("");
   const [confirmation, setConfirmation] = useState<{ kind: "invitation" | "remove"; invite: string; member?: string; name?: string } | null>(null);
   const [notice, setNotice] = useState("");
+  const [nameError, setNameError] = useState(""), [linkError, setLinkError] = useState("");
+  const [entryAction, setEntryAction] = useState<"create" | "join" | null>(null);
   const [identityDraft, setIdentityDraft] = useState<{ name: string; color: string; version: number } | null>(null);
   const [profile, setProfile] = useState(() => {
     try { const v = JSON.parse(localStorage.getItem("table-goblin-identity") || "null"); if (typeof v?.name === "string" && /^#[a-f0-9]{6}$/i.test(v.color)) return { name: v.name, color: v.color }; } catch {}
     return { name: "", color: "#e3a069" };
   });
   const anchor = useRef<HTMLDivElement>(null), client = useRef<RoomClient | null>(null), restored = useRef("");
+  const nameInput = useRef<HTMLInputElement>(null), linkInput = useRef<HTMLInputElement>(null);
   const connect = (state: RoomState) => {
     setConfirmation(null); setIdentityDraft(null); setNotice("");
     client.current?.close();
@@ -54,6 +57,32 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
     return () => { document.removeEventListener("pointerdown", close); window.removeEventListener("keydown", key); };
   }, [open]);
   const act = async (work: () => Promise<void>) => { setBusy(true); setError(""); setNotice(""); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : "The room could not be opened."); } finally { setBusy(false); } };
+  const enter = (action: "create" | "join") => {
+    if (busy || !ready) return;
+    setNameError(""); setLinkError(""); setError("");
+    if (!profile.name.trim()) {
+      setNameError(`Enter a name or nickname to ${action === "join" ? "join" : "create"} the room.`);
+      nameInput.current?.focus(); return;
+    }
+    if (action === "join" && !link.trim()) {
+      setLinkError("Paste an invitation link to join."); linkInput.current?.focus(); return;
+    }
+    setEntryAction(action);
+    void act(async () => {
+      const identity = { ...profile, name: profile.name.trim() };
+      if (action === "create") connect(await roomRequest("/api/rooms", { ...identity, title }));
+      else {
+        const url = new URL(link.trim(), location.origin);
+        if (url.origin !== location.origin) throw new Error("Open the invitation on its own server, then join there.");
+        const params = new URLSearchParams(url.hash.slice(1)), id = params.get("room"), invite = params.get("invite");
+        if (!id || !/^[a-z0-9]{16}$/.test(id) || !invite) throw new Error("Paste a complete room invitation link.");
+        connect(await roomRequest(`/api/rooms/${id}/join`, { ...identity, invite }));
+      }
+    }).finally(() => setEntryAction(null));
+  };
+  const entryKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); enter(link.trim() ? "join" : "create"); }
+  };
   const inviteLink = room?.invite ? `${location.origin}/#room=${room.id}&invite=${room.invite}` : "";
   const canManage = !busy && (status === "connected" || status === "saving");
   return <div ref={anchor} className="menu-anchor room-anchor">
@@ -61,25 +90,25 @@ export function RoomControl({ engine, ready, onStatus }: { engine: TableEngine |
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg><span>{status === "removed" && room ? "Access ended" : room ? `${room.participants.filter(p => p.online).length} players` : "Online"}</span>
     </button>
     {open && <section className="dropdown room-panel" aria-label="Online room controls">
-      <div className="room-heading"><strong>{room ? room.title : "Online room"}</strong><button aria-label="Close room controls" onClick={() => setOpen(false)}>×</button></div>
+      <div className="room-heading"><strong>{room ? room.title : link.trim() ? "Join room" : "Online room"}</strong><button aria-label="Close room controls" onClick={() => setOpen(false)}>×</button></div>
       {error && <p className="room-error" role="alert">{error}</p>}
       {notice && <p className="widget-note" role="status">{notice}</p>}
       {client.current?.rejectedDraft && <button className="widget-primary" onClick={() => void act(async () => { await client.current!.exportRejected(); })}>Export unsent edit</button>}
       {status === "removed" && client.current?.rejectedDraft && <p className="widget-note">Room images and media can no longer be downloaded. If your edit uses them, export preserves the edits and file references as recovery data.</p>}
       {!room ? <>
-        <label>Your name<input aria-label="Your player name" maxLength={32} value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} /></label>
+        <label>Your name · required<input ref={nameInput} aria-label="Your player name" aria-invalid={!!nameError} aria-describedby="room-name-help" required placeholder="Name or nickname" maxLength={32} value={profile.name} onKeyDown={entryKey} onChange={e => { setProfile({ ...profile, name: e.target.value }); if (e.target.value.trim()) setNameError(""); }} />
+          <span id="room-name-help" className={`room-field-help ${nameError ? "invalid" : ""}`} role={nameError ? "alert" : undefined}>{nameError || "This is how other players will see you."}</span>
+        </label>
         <ColorControl label="Presence color" value={profile.color} onChange={color => setProfile({ ...profile, color })} />
-        <label>Room name<input aria-label="Room name" maxLength={60} value={title} onChange={e => setTitle(e.target.value)} /></label>
-        <button className="widget-primary" disabled={busy || !ready || !profile.name.trim()} onClick={() => void act(async () => { const state = await roomRequest("/api/rooms", { ...profile, title }); connect(state); })}>Create room</button>
-        <label>Invitation link<input aria-label="Room invitation link" placeholder="Paste a room invitation" value={link} onChange={e => setLink(e.target.value)} /></label>
-        <button className="widget-primary" disabled={busy || !ready || !profile.name.trim() || !link.trim()} onClick={() => void act(async () => {
-          const url = new URL(link, location.origin);
-          if (url.origin !== location.origin) { setError("Open the invitation on its own server, then join there."); return; }
-          const params = new URLSearchParams(url.hash.slice(1)), id = params.get("room"), invite = params.get("invite");
-          if (!id || !/^[a-z0-9]{16}$/.test(id) || !invite) throw new Error("Paste a complete room invitation link.");
-          connect(await roomRequest(`/api/rooms/${id}/join`, { ...profile, invite }));
-        })}>Join room</button>
-        <p className="widget-note">Rooms start empty. Your local table stays saved separately. Start “Open Online Table Goblin” from the project folder to try rooms.</p>
+        {!link.trim() && <>
+          <label>Room name<input aria-label="Room name" maxLength={60} value={title} onKeyDown={entryKey} onChange={e => setTitle(e.target.value)} /></label>
+          <button className="widget-primary" disabled={busy || !ready} onClick={() => enter("create")}>{entryAction === "create" ? "Creating…" : "Create room"}</button>
+        </>}
+        <label>Invitation link<input ref={linkInput} aria-label="Room invitation link" aria-invalid={!!linkError} aria-describedby={linkError ? "room-link-help" : undefined} placeholder="Paste a room invitation" value={link} onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); enter("join"); } }} onChange={e => { setLink(e.target.value); setLinkError(""); }} />
+          {linkError && <span id="room-link-help" className="room-field-help invalid" role="alert">{linkError}</span>}
+        </label>
+        <button className="widget-primary" disabled={busy || !ready} onClick={() => enter("join")}>{entryAction === "join" ? "Joining…" : "Join room"}</button>
+        <p className="widget-note">{link.trim() ? "Choose a name, then join. Your local table stays saved separately." : "Create a room or paste an invitation to join. Your local table stays saved separately."}</p>
       </> : <>
         <div className="room-role"><i style={{ background: room.me.color }} /><span>{room.me.name} · {room.me.role === "gm" ? "GM" : "Player"}</span><small>{status === "connected" ? "Connected" : status === "saving" ? "Saving…" : status === "update-required" ? "Server update needed" : status === "removed" ? "Access ended" : "Reconnecting…"}</small>{status !== "removed" && <button className="room-person-action" aria-label="Edit identity" title="Edit your name and pointer color" disabled={!canManage} onClick={() => { setError(""); setNotice(""); setIdentityDraft({ name: room.me.name, color: room.me.color, version: room.me.profileVersion ?? 0 }); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3ZM13 6l5 5"/></svg></button>}</div>
         {identityDraft && status !== "removed" && <form className="room-identity" aria-label="Edit your identity" onSubmit={e => {

@@ -24,6 +24,8 @@ Open **Online**, enter a name and pointer color, and create a room. Copy the pla
 
 Browser identities and GM credentials use persistent, HttpOnly cookies scoped to each room. The GM should keep their browser profile; losing its cookies loses GM access in this prototype. Invitation links grant player access, never GM access. Opening a room URL after refresh restores the same identity. Clearing the address fragment returns to the normal entry page on the next reload; the room remains on the server.
 
+Invitation entry focuses on joining rather than showing room-creation fields. A name or nickname is explicitly required. Clicking Join without one shows an inline explanation and focuses the name field; Enter submits once a valid name is entered. Empty invitation links also get visible feedback. Busy controls show Joining/Creating and prevent repeated submissions.
+
 ## Invitations and participants
 
 The GM's **Online** popup contains **Copy invitation** and **Replace invitation**. Replacement asks for confirmation, invalidates previous invitation links, and updates the link in every connected GM tab. Players already in the room keep their identities and connections.

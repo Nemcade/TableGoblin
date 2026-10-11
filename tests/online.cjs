@@ -301,6 +301,7 @@ async function browserTests() {
   await require("./online-assets-browser.cjs")(browser, base);
   await require("./online-management-browser.cjs")(browser, base);
   await require("./online-identity-browser.cjs")(browser, base);
+  await require("./online-join-browser.cjs")(browser, base);
   await require("./online-media-browser.cjs")(browser, base);
   await require("./online-compat.cjs")(browser, base);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(async () => { await browser?.close(); await stop(); });
